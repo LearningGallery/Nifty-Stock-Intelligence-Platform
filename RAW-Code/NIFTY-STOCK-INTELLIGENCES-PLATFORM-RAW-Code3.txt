@@ -1,0 +1,1206 @@
+# 🚀 NIFTY STOCK INTELLIGENCE PLATFORM - Part 4
+
+Continuing with remaining Terraform modules and application code...
+
+---
+
+#### `terraform/modules/backend-service/variables.tf`
+
+```hcl
+variable "service_name" {
+  description = "Name of the ECS service"
+  type        = string
+}
+
+variable "cluster_id" {
+  description = "ECS cluster ID"
+  type        = string
+}
+
+variable "cluster_name" {
+  description = "ECS cluster name"
+  type        = string
+}
+
+variable "task_cpu" {
+  description = "CPU units for task"
+  type        = number
+}
+
+variable "task_memory" {
+  description = "Memory for task"
+  type        = number
+}
+
+variable "desired_count" {
+  description = "Desired number of tasks"
+  type        = number
+}
+
+variable "image_tag" {
+  description = "Docker image tag"
+  type        = string
+}
+
+variable "ecr_repository_name" {
+  description = "ECR repository name"
+  type        = string
+}
+
+variable "vpc_id" {
+  description = "VPC ID"
+  type        = string
+}
+
+variable "private_subnet_ids" {
+  description = "Private subnet IDs"
+  type        = list(string)
+}
+
+variable "public_subnet_ids" {
+  description = "Public subnet IDs"
+  type        = list(string)
+}
+
+variable "alb_security_group_id" {
+  description = "ALB security group ID"
+  type        = string
+}
+
+variable "ecs_security_group_id" {
+  description = "ECS security group ID"
+  type        = string
+}
+
+variable "environment_variables" {
+  description = "Environment variables for container"
+  type        = map(string)
+  default     = {}
+}
+
+variable "auto_scaling_min_capacity" {
+  description = "Minimum capacity for auto-scaling"
+  type        = number
+}
+
+variable "auto_scaling_max_capacity" {
+  description = "Maximum capacity for auto-scaling"
+  type        = number
+}
+
+variable "auto_scaling_cpu_target" {
+  description = "CPU target percentage for auto-scaling"
+  type        = number
+  default     = 70
+}
+
+variable "auto_scaling_memory_target" {
+  description = "Memory target percentage for auto-scaling"
+  type        = number
+  default     = 80
+}
+
+variable "enable_redis" {
+  description = "Enable Redis cache"
+  type        = bool
+  default     = true
+}
+
+variable "redis_node_type" {
+  description = "Redis node type"
+  type        = string
+  default     = "cache.t3.micro"
+}
+
+variable "redis_num_cache_nodes" {
+  description = "Number of Redis nodes"
+  type        = number
+  default     = 1
+}
+
+variable "redis_engine_version" {
+  description = "Redis engine version"
+  type        = string
+  default     = "7.0"
+}
+
+variable "health_check_path" {
+  description = "Health check path"
+  type        = string
+  default     = "/health"
+}
+
+variable "health_check_interval" {
+  description = "Health check interval"
+  type        = number
+  default     = 30
+}
+
+variable "health_check_timeout" {
+  description = "Health check timeout"
+  type        = number
+  default     = 5
+}
+
+variable "healthy_threshold" {
+  description = "Healthy threshold"
+  type        = number
+  default     = 2
+}
+
+variable "unhealthy_threshold" {
+  description = "Unhealthy threshold"
+  type        = number
+  default     = 3
+}
+
+variable "tags" {
+  description = "Tags to apply to resources"
+  type        = map(string)
+  default     = {}
+}
+```
+
+---
+
+#### `terraform/modules/backend-service/outputs.tf`
+
+```hcl
+output "service_name" {
+  description = "ECS service name"
+  value       = aws_ecs_service.backend.name
+}
+
+output "service_id" {
+  description = "ECS service ID"
+  value       = aws_ecs_service.backend.id
+}
+
+output "task_definition_arn" {
+  description = "Task definition ARN"
+  value       = aws_ecs_task_definition.backend.arn
+}
+
+output "ecr_repository_url" {
+  description = "ECR repository URL"
+  value       = aws_ecr_repository.backend.repository_url
+}
+
+output "alb_dns_name" {
+  description = "ALB DNS name"
+  value       = aws_lb.backend.dns_name
+}
+
+output "alb_arn" {
+  description = "ALB ARN"
+  value       = aws_lb.backend.arn
+}
+
+output "alb_arn_suffix" {
+  description = "ALB ARN suffix for CloudWatch metrics"
+  value       = aws_lb.backend.arn_suffix
+}
+
+output "alb_zone_id" {
+  description = "ALB hosted zone ID"
+  value       = aws_lb.backend.zone_id
+}
+
+output "target_group_arn" {
+  description = "Target group ARN"
+  value       = aws_lb_target_group.backend.arn
+}
+
+output "target_group_arn_suffix" {
+  description = "Target group ARN suffix"
+  value       = aws_lb_target_group.backend.arn_suffix
+}
+
+output "redis_endpoint" {
+  description = "Redis endpoint"
+  value       = var.enable_redis ? aws_elasticache_cluster.redis[0].cache_nodes[0].address : ""
+}
+
+output "api_keys_secret_arn" {
+  description = "API keys secret ARN"
+  value       = aws_secretsmanager_secret.api_keys.arn
+}
+
+output "task_role_arn" {
+  description = "ECS task role ARN"
+  value       = aws_iam_role.ecs_task.arn
+}
+
+output "execution_role_arn" {
+  description = "ECS execution role ARN"
+  value       = aws_iam_role.ecs_task_execution.arn
+}
+```
+
+---
+
+#### `terraform/modules/backend-service/versions.tf`
+
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+  }
+}
+```
+
+---
+
+### **Module: DynamoDB**
+
+#### `terraform/modules/dynamodb/main.tf`
+
+```hcl
+# ---------------------------------------------------------
+# Chat Sessions Table
+# ---------------------------------------------------------
+resource "aws_dynamodb_table" "chat_sessions" {
+  name           = "${var.project_name}-${var.environment}-chat-sessions"
+  billing_mode   = var.billing_mode
+  hash_key       = "session_id"
+  range_key      = "created_at"
+
+  attribute {
+    name = "session_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "created_at"
+    type = "N"
+  }
+
+  attribute {
+    name = "user_id"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "UserIdIndex"
+    hash_key        = "user_id"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = var.point_in_time_recovery
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-${var.environment}-chat-sessions"
+    }
+  )
+}
+
+# ---------------------------------------------------------
+# Chat Messages Table
+# ---------------------------------------------------------
+resource "aws_dynamodb_table" "chat_messages" {
+  name           = "${var.project_name}-${var.environment}-chat-messages"
+  billing_mode   = var.billing_mode
+  hash_key       = "session_id"
+  range_key      = "message_id"
+
+  attribute {
+    name = "session_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "message_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "timestamp"
+    type = "N"
+  }
+
+  local_secondary_index {
+    name            = "TimestampIndex"
+    range_key       = "timestamp"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = var.point_in_time_recovery
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-${var.environment}-chat-messages"
+    }
+  )
+}
+
+# ---------------------------------------------------------
+# Document Metadata Table
+# ---------------------------------------------------------
+resource "aws_dynamodb_table" "document_metadata" {
+  name           = "${var.project_name}-${var.environment}-document-metadata"
+  billing_mode   = var.billing_mode
+  hash_key       = "document_id"
+  range_key      = "version"
+
+  attribute {
+    name = "document_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "version"
+    type = "N"
+  }
+
+  attribute {
+    name = "stock_symbol"
+    type = "S"
+  }
+
+  attribute {
+    name = "document_type"
+    type = "S"
+  }
+
+  attribute {
+    name = "ingestion_timestamp"
+    type = "N"
+  }
+
+  global_secondary_index {
+    name            = "StockSymbolIndex"
+    hash_key        = "stock_symbol"
+    range_key       = "ingestion_timestamp"
+    projection_type = "ALL"
+  }
+
+  global_secondary_index {
+    name            = "DocumentTypeIndex"
+    hash_key        = "document_type"
+    range_key       = "ingestion_timestamp"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = var.point_in_time_recovery
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-${var.environment}-document-metadata"
+    }
+  )
+}
+
+# ---------------------------------------------------------
+# Stock Analysis Cache Table
+# ---------------------------------------------------------
+resource "aws_dynamodb_table" "stock_analysis_cache" {
+  name           = "${var.project_name}-${var.environment}-stock-analysis-cache"
+  billing_mode   = var.billing_mode
+  hash_key       = "stock_symbol"
+  range_key      = "analysis_type"
+
+  attribute {
+    name = "stock_symbol"
+    type = "S"
+  }
+
+  attribute {
+    name = "analysis_type"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = var.point_in_time_recovery
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-${var.environment}-stock-analysis-cache"
+    }
+  )
+}
+```
+
+---
+
+#### `terraform/modules/dynamodb/variables.tf`
+
+```hcl
+variable "project_name" {
+  description = "Project name"
+  type        = string
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+}
+
+variable "billing_mode" {
+  description = "DynamoDB billing mode"
+  type        = string
+  default     = "PAY_PER_REQUEST"
+}
+
+variable "point_in_time_recovery" {
+  description = "Enable point-in-time recovery"
+  type        = bool
+  default     = true
+}
+
+variable "tags" {
+  description = "Tags to apply to resources"
+  type        = map(string)
+  default     = {}
+}
+```
+
+---
+
+#### `terraform/modules/dynamodb/outputs.tf`
+
+```hcl
+output "chat_sessions_table_name" {
+  description = "Chat sessions table name"
+  value       = aws_dynamodb_table.chat_sessions.name
+}
+
+output "chat_sessions_table_arn" {
+  description = "Chat sessions table ARN"
+  value       = aws_dynamodb_table.chat_sessions.arn
+}
+
+output "chat_messages_table_name" {
+  description = "Chat messages table name"
+  value       = aws_dynamodb_table.chat_messages.name
+}
+
+output "chat_messages_table_arn" {
+  description = "Chat messages table ARN"
+  value       = aws_dynamodb_table.chat_messages.arn
+}
+
+output "document_metadata_table_name" {
+  description = "Document metadata table name"
+  value       = aws_dynamodb_table.document_metadata.name
+}
+
+output "document_metadata_table_arn" {
+  description = "Document metadata table ARN"
+  value       = aws_dynamodb_table.document_metadata.arn
+}
+
+output "stock_analysis_cache_table_name" {
+  description = "Stock analysis cache table name"
+  value       = aws_dynamodb_table.stock_analysis_cache.name
+}
+
+output "stock_analysis_cache_table_arn" {
+  description = "Stock analysis cache table ARN"
+  value       = aws_dynamodb_table.stock_analysis_cache.arn
+}
+```
+
+---
+
+#### `terraform/modules/dynamodb/versions.tf`
+
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+```
+
+---
+
+### **Module: OpenSearch**
+
+#### `terraform/modules/opensearch/main.tf`
+
+```hcl
+# ---------------------------------------------------------
+# OpenSearch Domain
+# ---------------------------------------------------------
+resource "aws_opensearch_domain" "main" {
+  domain_name    = var.domain_name
+  engine_version = "OpenSearch_${var.opensearch_version}"
+
+  cluster_config {
+    instance_type          = var.instance_type
+    instance_count         = var.instance_count
+    zone_awareness_enabled = var.instance_count > 1
+
+    dynamic "zone_awareness_config" {
+      for_each = var.instance_count > 1 ? [1] : []
+      content {
+        availability_zone_count = 2
+      }
+    }
+  }
+
+  ebs_options {
+    ebs_enabled = true
+    volume_size = var.ebs_volume_size
+    volume_type = "gp3"
+    iops        = 3000
+    throughput  = 125
+  }
+
+  encrypt_at_rest {
+    enabled = var.enable_encryption_at_rest
+  }
+
+  node_to_node_encryption {
+    enabled = var.enable_node_to_node_encryption
+  }
+
+  domain_endpoint_options {
+    enforce_https       = true
+    tls_security_policy = "Policy-Min-TLS-1-2-2019-07"
+  }
+
+  vpc_options {
+    subnet_ids         = var.instance_count > 1 ? var.subnet_ids : [var.subnet_ids[0]]
+    security_group_ids = var.security_group_ids
+  }
+
+  advanced_options = {
+    "rest.action.multi.allow_explicit_index" = "true"
+    "override_main_response_version"         = "false"
+  }
+
+  access_policies = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          AWS = "*"
+        }
+        Action   = "es:*"
+        Resource = "arn:aws:es:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:domain/${var.domain_name}/*"
+      }
+    ]
+  })
+
+  advanced_security_options {
+    enabled                        = true
+    internal_user_database_enabled = true
+    master_user_options {
+      master_user_name     = var.master_user_name
+      master_user_password = var.master_user_password
+    }
+  }
+
+  log_publishing_options {
+    cloudwatch_log_group_arn = aws_cloudwatch_log_group.opensearch_logs.arn
+    log_type                 = "INDEX_SLOW_LOGS"
+  }
+
+  log_publishing_options {
+    cloudwatch_log_group_arn = aws_cloudwatch_log_group.opensearch_logs.arn
+    log_type                 = "SEARCH_SLOW_LOGS"
+  }
+
+  log_publishing_options {
+    cloudwatch_log_group_arn = aws_cloudwatch_log_group.opensearch_application_logs.arn
+    log_type                 = "ES_APPLICATION_LOGS"
+  }
+
+  tags = var.tags
+
+  depends_on = [
+    aws_cloudwatch_log_group.opensearch_logs,
+    aws_cloudwatch_log_group.opensearch_application_logs
+  ]
+}
+
+# ---------------------------------------------------------
+# CloudWatch Log Groups
+# ---------------------------------------------------------
+resource "aws_cloudwatch_log_group" "opensearch_logs" {
+  name              = "/aws/opensearch/${var.domain_name}/logs"
+  retention_in_days = 30
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_log_group" "opensearch_application_logs" {
+  name              = "/aws/opensearch/${var.domain_name}/application"
+  retention_in_days = 30
+
+  tags = var.tags
+}
+
+# ---------------------------------------------------------
+# CloudWatch Log Resource Policy
+# ---------------------------------------------------------
+resource "aws_cloudwatch_log_resource_policy" "opensearch" {
+  policy_name = "${var.domain_name}-opensearch-logs"
+
+  policy_document = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "es.amazonaws.com"
+        }
+        Action = [
+          "logs:PutLogEvents",
+          "logs:CreateLogStream"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
+# ---------------------------------------------------------
+# Data Sources
+# ---------------------------------------------------------
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+```
+
+---
+
+#### `terraform/modules/opensearch/variables.tf`
+
+```hcl
+variable "domain_name" {
+  description = "OpenSearch domain name"
+  type        = string
+}
+
+variable "opensearch_version" {
+  description = "OpenSearch version"
+  type        = string
+  default     = "2.11"
+}
+
+variable "instance_type" {
+  description = "Instance type"
+  type        = string
+  default     = "t3.medium.search"
+}
+
+variable "instance_count" {
+  description = "Number of instances"
+  type        = number
+  default     = 2
+}
+
+variable "ebs_volume_size" {
+  description = "EBS volume size in GB"
+  type        = number
+  default     = 100
+}
+
+variable "vpc_id" {
+  description = "VPC ID"
+  type        = string
+}
+
+variable "subnet_ids" {
+  description = "Subnet IDs"
+  type        = list(string)
+}
+
+variable "security_group_ids" {
+  description = "Security group IDs"
+  type        = list(string)
+}
+
+variable "enable_node_to_node_encryption" {
+  description = "Enable node-to-node encryption"
+  type        = bool
+  default     = true
+}
+
+variable "enable_encryption_at_rest" {
+  description = "Enable encryption at rest"
+  type        = bool
+  default     = true
+}
+
+variable "master_user_name" {
+  description = "Master user name"
+  type        = string
+  default     = "admin"
+  sensitive   = true
+}
+
+variable "master_user_password" {
+  description = "Master user password"
+  type        = string
+  default     = "Admin@12345" # Change in production
+  sensitive   = true
+}
+
+variable "tags" {
+  description = "Tags to apply to resources"
+  type        = map(string)
+  default     = {}
+}
+```
+
+---
+
+#### `terraform/modules/opensearch/outputs.tf`
+
+```hcl
+output "domain_id" {
+  description = "OpenSearch domain ID"
+  value       = aws_opensearch_domain.main.domain_id
+}
+
+output "domain_name" {
+  description = "OpenSearch domain name"
+  value       = aws_opensearch_domain.main.domain_name
+}
+
+output "domain_arn" {
+  description = "OpenSearch domain ARN"
+  value       = aws_opensearch_domain.main.arn
+}
+
+output "endpoint" {
+  description = "OpenSearch endpoint"
+  value       = aws_opensearch_domain.main.endpoint
+}
+
+output "dashboard_endpoint" {
+  description = "OpenSearch Dashboards endpoint"
+  value       = "https://${aws_opensearch_domain.main.endpoint}/_dashboards"
+}
+
+output "kibana_endpoint" {
+  description = "Kibana endpoint (alias for dashboard)"
+  value       = "https://${aws_opensearch_domain.main.endpoint}/_dashboards"
+}
+```
+
+---
+
+#### `terraform/modules/opensearch/versions.tf`
+
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+```
+
+---
+
+### **Module: Cognito**
+
+#### `terraform/modules/cognito/main.tf`
+
+```hcl
+# ---------------------------------------------------------
+# Cognito User Pool
+# ---------------------------------------------------------
+resource "aws_cognito_user_pool" "main" {
+  name = var.user_pool_name
+
+  username_attributes      = ["email"]
+  auto_verified_attributes = ["email"]
+
+  password_policy {
+    minimum_length                   = var.password_minimum_length
+    require_lowercase                = true
+    require_numbers                  = true
+    require_symbols                  = true
+    require_uppercase                = true
+    temporary_password_validity_days = 7
+  }
+
+  mfa_configuration = var.mfa_configuration
+
+  software_token_mfa_configuration {
+    enabled = var.mfa_configuration != "OFF"
+  }
+
+  account_recovery_setting {
+    recovery_mechanism {
+      name     = "verified_email"
+      priority = 1
+    }
+  }
+
+  user_attribute_update_settings {
+    attributes_require_verification_before_update = ["email"]
+  }
+
+  schema {
+    name                     = "email"
+    attribute_data_type      = "String"
+    mutable                  = true
+    required                 = true
+    developer_only_attribute = false
+
+    string_attribute_constraints {
+      min_length = 5
+      max_length = 320
+    }
+  }
+
+  schema {
+    name                     = "name"
+    attribute_data_type      = "String"
+    mutable                  = true
+    required                 = false
+    developer_only_attribute = false
+
+    string_attribute_constraints {
+      min_length = 1
+      max_length = 256
+    }
+  }
+
+  email_configuration {
+    email_sending_account = "COGNITO_DEFAULT"
+  }
+
+  admin_create_user_config {
+    allow_admin_create_user_only = false
+  }
+
+  tags = var.tags
+}
+
+# ---------------------------------------------------------
+# Cognito User Pool Client
+# ---------------------------------------------------------
+resource "aws_cognito_user_pool_client" "main" {
+  name         = "${var.user_pool_name}-client"
+  user_pool_id = aws_cognito_user_pool.main.id
+
+  generate_secret = false
+
+  explicit_auth_flows = [
+    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH",
+    "ALLOW_USER_SRP_AUTH"
+  ]
+
+  token_validity_units {
+    access_token  = "hours"
+    id_token      = "hours"
+    refresh_token = "days"
+  }
+
+  access_token_validity  = 1
+  id_token_validity      = 1
+  refresh_token_validity = 30
+
+  prevent_user_existence_errors = "ENABLED"
+
+  read_attributes = [
+    "email",
+    "email_verified",
+    "name"
+  ]
+
+  write_attributes = [
+    "email",
+    "name"
+  ]
+}
+
+# ---------------------------------------------------------
+# Cognito User Pool Domain
+# ---------------------------------------------------------
+resource "aws_cognito_user_pool_domain" "main" {
+  domain       = "${var.user_pool_name}-${random_string.domain_suffix.result}"
+  user_pool_id = aws_cognito_user_pool.main.id
+}
+
+resource "random_string" "domain_suffix" {
+  length  = 8
+  special = false
+  upper   = false
+}
+
+# ---------------------------------------------------------
+# Cognito Identity Pool
+# ---------------------------------------------------------
+resource "aws_cognito_identity_pool" "main" {
+  identity_pool_name               = var.user_pool_name
+  allow_unauthenticated_identities = false
+
+  cognito_identity_providers {
+    client_id               = aws_cognito_user_pool_client.main.id
+    provider_name           = aws_cognito_user_pool.main.endpoint
+    server_side_token_check = true
+  }
+
+  tags = var.tags
+}
+
+# ---------------------------------------------------------
+# IAM Roles for Identity Pool
+# ---------------------------------------------------------
+resource "aws_iam_role" "authenticated" {
+  name_prefix = "${var.user_pool_name}-authenticated-"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = "cognito-identity.amazonaws.com"
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "cognito-identity.amazonaws.com:aud" = aws_cognito_identity_pool.main.id
+          }
+          "ForAnyValue:StringLike" = {
+            "cognito-identity.amazonaws.com:amr" = "authenticated"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "authenticated" {
+  name_prefix = "${var.user_pool_name}-authenticated-policy-"
+  role        = aws_iam_role.authenticated.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "mobileanalytics:PutEvents",
+          "cognito-sync:*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# ---------------------------------------------------------
+# Attach Roles to Identity Pool
+# ---------------------------------------------------------
+resource "aws_cognito_identity_pool_roles_attachment" "main" {
+  identity_pool_id = aws_cognito_identity_pool.main.id
+
+  roles = {
+    authenticated = aws_iam_role.authenticated.arn
+  }
+}
+```
+
+---
+
+#### `terraform/modules/cognito/variables.tf`
+
+```hcl
+variable "user_pool_name" {
+  description = "Cognito User Pool name"
+  type        = string
+}
+
+variable "password_minimum_length" {
+  description = "Minimum password length"
+  type        = number
+  default     = 12
+}
+
+variable "mfa_configuration" {
+  description = "MFA configuration (OFF, OPTIONAL, ON)"
+  type        = string
+  default     = "OPTIONAL"
+
+  validation {
+    condition     = contains(["OFF", "OPTIONAL", "ON"], var.mfa_configuration)
+    error_message = "MFA configuration must be OFF, OPTIONAL, or ON."
+  }
+}
+
+variable "tags" {
+  description = "Tags to apply to resources"
+  type        = map(string)
+  default     = {}
+}
+```
+
+---
+
+#### `terraform/modules/cognito/outputs.tf`
+
+```hcl
+output "user_pool_id" {
+  description = "Cognito User Pool ID"
+  value       = aws_cognito_user_pool.main.id
+}
+
+output "user_pool_arn" {
+  description = "Cognito User Pool ARN"
+  value       = aws_cognito_user_pool.main.arn
+}
+
+output "user_pool_endpoint" {
+  description = "Cognito User Pool endpoint"
+  value       = aws_cognito_user_pool.main.endpoint
+}
+
+output "user_pool_client_id" {
+  description = "Cognito User Pool Client ID"
+  value       = aws_cognito_user_pool_client.main.id
+  sensitive   = true
+}
+
+output "domain" {
+  description = "Cognito User Pool domain"
+  value       = aws_cognito_user_pool_domain.main.domain
+}
+
+output "identity_pool_id" {
+  description = "Cognito Identity Pool ID"
+  value       = aws_cognito_identity_pool.main.id
+}
+```
+
+---
+
+#### `terraform/modules/cognito/versions.tf`
+
+```hcl
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.5"
+    }
+  }
+}
+```
+
+---
+
+## 🐍 BACKEND APPLICATION CODE
+
+### **FastAPI Backend Structure**
+
+#### `backend/requirements.txt`
+
+```txt
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# AWS SDKs
+boto3==1.34.0
+botocore==1.34.0
+aioboto3==12.3.0
+
+# Database & Cache
+redis==5.0.1
+hiredis==2.3.2
+
+# OpenSearch
+opensearch-py==2.4.2
+requests-aws4auth==1.2.3
+
+# HTTP Client
+httpx==0.26.0
+aiohttp==3.9.1
+
+# Data Processing
+pandas==2.1.4
+numpy==1.26.3
+
+# Technical Analysis
+ta-lib==0.4.28  # Requires system TA-Lib installation
+pandas-ta==0.3.14b0
+
+# NLP & Sentiment Analysis
+transformers==4.36.2
+torch==2.1.2
+nltk==3.8.1
+textblob==0.17.1
+
+# Date/Time
+python-dateutil==2.8.2
+pytz==2023.3
+
+# Logging & Monitoring
+python-json-logger==2.0.7
+aws-xray-sdk==2.12.1
+
+# Security
+python-jose[cryptography]==3.3.0
+pass

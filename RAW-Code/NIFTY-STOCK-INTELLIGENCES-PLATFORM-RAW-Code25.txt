@@ -1,0 +1,657 @@
+# 🚀 **PART 5: FRONTEND REMAINING FILES**
+
+## Frontend Components - Common (continued)
+
+### `frontend/src/components/Common/NotificationToast.jsx`
+```jsx
+// Note: Using sonner library (already imported in main.jsx)
+// This is just a wrapper/helper if needed
+
+import { toast } from 'sonner'
+
+export const showSuccess = (message) => {
+  toast.success(message)
+}
+
+export const showError = (message) => {
+  toast.error(message)
+}
+
+export const showInfo = (message) => {
+  toast.info(message)
+}
+
+export const showWarning = (message) => {
+  toast.warning(message)
+}
+
+export const showLoading = (message) => {
+  return toast.loading(message)
+}
+
+export const dismissToast = (toastId) => {
+  toast.dismiss(toastId)
+}
+```
+
+---
+
+## Frontend Hooks
+
+### `frontend/src/hooks/useChat.js`
+```javascript
+import { useState, useCallback } from 'react'
+import { chatAPI } from '@/services/api'
+import { toast } from 'sonner'
+
+export function useChat(sessionId) {
+  const [messages, setMessages] = useState([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  const sendMessage = useCallback(async (content) => {
+    if (!content.trim()) return
+
+    const userMessage = {
+      role: 'user',
+      content,
+      timestamp: new Date().toISOString()
+    }
+
+    setMessages(prev => [...prev, userMessage])
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const response = await chatAPI.sendMessage({
+        session_id: sessionId,
+        message: content
+      })
+
+      const assistantMessage = {
+        role: 'assistant',
+        content: response.data.content,
+        timestamp: response.data.timestamp,
+        analysis_data: response.data.analysis_data,
+        sources: response.data.sources
+      }
+
+      setMessages(prev => [...prev, assistantMessage])
+      
+      return response.data
+    } catch (err) {
+      setError(err.message)
+      toast.error('Failed to send message. Please try again.')
+      throw err
+    } finally {
+      setIsLoading(false)
+    }
+  }, [sessionId])
+
+  const clearMessages = useCallback(() => {
+    setMessages([])
+    setError(null)
+  }, [])
+
+  return {
+    messages,
+    isLoading,
+    error,
+    sendMessage,
+    clearMessages,
+    setMessages
+  }
+}
+```
+
+### `frontend/src/hooks/useAuth.js`
+```javascript
+import { useAuthStore } from '@/store/authStore'
+
+export function useAuth() {
+  const {
+    user,
+    token,
+    isAuthenticated,
+    isLoading,
+    login,
+    logout,
+    updateUser
+  } = useAuthStore()
+
+  return {
+    user,
+    token,
+    isAuthenticated,
+    isLoading,
+    login,
+    logout,
+    updateUser
+  }
+}
+```
+
+### `frontend/src/hooks/useStockData.js`
+```javascript
+import { useQuery } from '@tanstack/react-query'
+import { stockAPI } from '@/services/api'
+
+export function useStockData(symbol) {
+  return useQuery({
+    queryKey: ['stock', symbol],
+    queryFn: () => stockAPI.getStockPrice(symbol),
+    enabled: !!symbol,
+    staleTime: 60000, // 1 minute
+    refetchInterval: 300000 // 5 minutes
+  })
+}
+
+export function useStockSearch(query) {
+  return useQuery({
+    queryKey: ['stockSearch', query],
+    queryFn: () => stockAPI.searchStocks(query),
+    enabled: query.length >= 2,
+    staleTime: 300000 // 5 minutes
+  })
+}
+
+export function useHistoricalData(symbol, period = '1M', interval = '1D') {
+  return useQuery({
+    queryKey: ['historicalData', symbol, period, interval],
+    queryFn: () => stockAPI.getHistoricalData(symbol, period, interval),
+    enabled: !!symbol,
+    staleTime: 600000 // 10 minutes
+  })
+}
+
+export function useFundamentals(symbol) {
+  return useQuery({
+    queryKey: ['fundamentals', symbol],
+    queryFn: () => stockAPI.getFundamentals(symbol),
+    enabled: !!symbol,
+    staleTime: 3600000 // 1 hour
+  })
+}
+```
+
+---
+
+## Frontend Contexts
+
+### `frontend/src/contexts/AuthContext.jsx`
+```jsx
+import { createContext, useContext } from 'react'
+import { useAuthStore } from '@/store/authStore'
+
+const AuthContext = createContext(null)
+
+export function AuthProvider({ children }) {
+  const auth = useAuthStore()
+
+  return (
+    <AuthContext.Provider value={auth}>
+      {children}
+    </AuthContext.Provider>
+  )
+}
+
+export function useAuthContext() {
+  const context = useContext(AuthContext)
+  if (!context) {
+    throw new Error('useAuthContext must be used within AuthProvider')
+  }
+  return context
+}
+```
+
+### `frontend/src/contexts/ChatContext.jsx`
+```jsx
+import { createContext, useContext, useState } from 'react'
+
+const ChatContext = createContext(null)
+
+export function ChatProvider({ children }) {
+  const [activeSessions, setActiveSessions] = useState([])
+  const [currentSessionId, setCurrentSessionId] = useState(null)
+
+  const addSession = (session) => {
+    setActiveSessions(prev => [session, ...prev])
+  }
+
+  const removeSession = (sessionId) => {
+    setActiveSessions(prev => prev.filter(s => s.session_id !== sessionId))
+    if (currentSessionId === sessionId) {
+      setCurrentSessionId(null)
+    }
+  }
+
+  const value = {
+    activeSessions,
+    currentSessionId,
+    setCurrentSessionId,
+    addSession,
+    removeSession
+  }
+
+  return (
+    <ChatContext.Provider value={value}>
+      {children}
+    </ChatContext.Provider>
+  )
+}
+
+export function useChatContext() {
+  const context = useContext(ChatContext)
+  if (!context) {
+    throw new Error('useChatContext must be used within ChatProvider')
+  }
+  return context
+}
+```
+
+---
+
+## Frontend Services
+
+### `frontend/src/services/auth.js`
+```javascript
+import axios from 'axios'
+
+const COGNITO_DOMAIN = import.meta.env.VITE_COGNITO_DOMAIN
+const CLIENT_ID = import.meta.env.VITE_COGNITO_CLIENT_ID
+const REGION = import.meta.env.VITE_COGNITO_REGION
+
+export const authService = {
+  async login(email, password) {
+    // Cognito authentication
+    const response = await axios.post(
+      `https://cognito-idp.${REGION}.amazonaws.com/`,
+      {
+        AuthFlow: 'USER_PASSWORD_AUTH',
+        ClientId: CLIENT_ID,
+        AuthParameters: {
+          USERNAME: email,
+          PASSWORD: password
+        }
+      },
+      {
+        headers: {
+          'X-Amz-Target': 'AWSCognitoIdentityProviderService.InitiateAuth',
+          'Content-Type': 'application/x-amz-json-1.1'
+        }
+      }
+    )
+
+    return response.data.AuthenticationResult
+  },
+
+  async signup(email, password, name) {
+    const response = await axios.post(
+      `https://cognito-idp.${REGION}.amazonaws.com/`,
+      {
+        ClientId: CLIENT_ID,
+        Username: email,
+        Password: password,
+        UserAttributes: [
+          {
+            Name: 'email',
+            Value: email
+          },
+          {
+            Name: 'name',
+            Value: name
+          }
+        ]
+      },
+      {
+        headers: {
+          'X-Amz-Target': 'AWSCognitoIdentityProviderService.SignUp',
+          'Content-Type': 'application/x-amz-json-1.1'
+        }
+      }
+    )
+
+    return response.data
+  },
+
+  async refreshToken(refreshToken) {
+    const response = await axios.post(
+      `https://cognito-idp.${REGION}.amazonaws.com/`,
+      {
+        AuthFlow: 'REFRESH_TOKEN_AUTH',
+        ClientId: CLIENT_ID,
+        AuthParameters: {
+          REFRESH_TOKEN: refreshToken
+        }
+      },
+      {
+        headers: {
+          'X-Amz-Target': 'AWSCognitoIdentityProviderService.InitiateAuth',
+          'Content-Type': 'application/x-amz-json-1.1'
+        }
+      }
+    )
+
+    return response.data.AuthenticationResult
+  },
+
+  async forgotPassword(email) {
+    const response = await axios.post(
+      `https://cognito-idp.${REGION}.amazonaws.com/`,
+      {
+        ClientId: CLIENT_ID,
+        Username: email
+      },
+      {
+        headers: {
+          'X-Amz-Target': 'AWSCognitoIdentityProviderService.ForgotPassword',
+          'Content-Type': 'application/x-amz-json-1.1'
+        }
+      }
+    )
+
+    return response.data
+  }
+}
+```
+
+### `frontend/src/services/websocket.js`
+```javascript
+// WebSocket service for real-time updates (future enhancement)
+
+class WebSocketService {
+  constructor() {
+    this.ws = null
+    this.reconnectAttempts = 0
+    this.maxReconnectAttempts = 5
+    this.reconnectDelay = 3000
+    this.listeners = new Map()
+  }
+
+  connect(url, token) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return
+    }
+
+    this.ws = new WebSocket(`${url}?token=${token}`)
+
+    this.ws.onopen = () => {
+      console.log('WebSocket connected')
+      this.reconnectAttempts = 0
+    }
+
+    this.ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        this.notifyListeners(data.type, data.payload)
+      } catch (error) {
+        console.error('WebSocket message parse error:', error)
+      }
+    }
+
+    this.ws.onerror = (error) => {
+      console.error('WebSocket error:', error)
+    }
+
+    this.ws.onclose = () => {
+      console.log('WebSocket disconnected')
+      this.attemptReconnect(url, token)
+    }
+  }
+
+  attemptReconnect(url, token) {
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++
+      setTimeout(() => {
+        console.log(`Reconnecting... Attempt ${this.reconnectAttempts}`)
+        this.connect(url, token)
+      }, this.reconnectDelay)
+    }
+  }
+
+  send(type, payload) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type, payload }))
+    } else {
+      console.warn('WebSocket not connected')
+    }
+  }
+
+  subscribe(type, callback) {
+    if (!this.listeners.has(type)) {
+      this.listeners.set(type, [])
+    }
+    this.listeners.get(type).push(callback)
+
+    // Return unsubscribe function
+    return () => {
+      const callbacks = this.listeners.get(type)
+      if (callbacks) {
+        const index = callbacks.indexOf(callback)
+        if (index > -1) {
+          callbacks.splice(index, 1)
+        }
+      }
+    }
+  }
+
+  notifyListeners(type, payload) {
+    const callbacks = this.listeners.get(type) || []
+    callbacks.forEach(callback => callback(payload))
+  }
+
+  disconnect() {
+    if (this.ws) {
+      this.ws.close()
+      this.ws = null
+    }
+    this.listeners.clear()
+  }
+}
+
+export default new WebSocketService()
+```
+
+---
+
+## Frontend Utils
+
+### `frontend/src/utils/formatters.js`
+```javascript
+export function formatCurrency(amount, decimals = 2) {
+  if (amount >= 10000000) {
+    return `₹${(amount / 10000000).toFixed(decimals)} Cr`
+  } else if (amount >= 100000) {
+    return `₹${(amount / 100000).toFixed(decimals)} L`
+  } else if (amount >= 1000) {
+    return `₹${(amount / 1000).toFixed(decimals)} K`
+  } else {
+    return `₹${amount.toFixed(decimals)}`
+  }
+}
+
+export function formatPercentage(value, decimals = 2) {
+  const sign = value >= 0 ? '+' : ''
+  return `${sign}${value.toFixed(decimals)}%`
+}
+
+export function formatNumber(value, decimals = 2) {
+  return new Intl.NumberFormat('en-IN', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  }).format(value)
+}
+
+export function formatVolume(volume) {
+  if (volume >= 10000000) {
+    return `${(volume / 10000000).toFixed(2)} Cr`
+  } else if (volume >= 1000000) {
+    return `${(volume / 1000000).toFixed(2)} M`
+  } else if (volume >= 1000) {
+    return `${(volume / 1000).toFixed(2)} K`
+  } else {
+    return volume.toString()
+  }
+}
+
+export function truncateText(text, maxLength = 50) {
+  if (text.length <= maxLength) return text
+  return text.substring(0, maxLength) + '...'
+}
+```
+
+### `frontend/src/utils/validators.js`
+```javascript
+export function validateStockSymbol(symbol) {
+  const pattern = /^[A-Z]{2,10}$/
+  return pattern.test(symbol)
+}
+
+export function validateEmail(email) {
+  const pattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+  return pattern.test(email)
+}
+
+export function validatePassword(password) {
+  // At least 8 characters, 1 uppercase, 1 lowercase, 1 number
+  const pattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/
+  return pattern.test(password)
+}
+
+export function sanitizeInput(input) {
+  return input.trim().replace(/<[^>]*>/g, '')
+}
+```
+
+### `frontend/src/utils/constants.js`
+```javascript
+export const STOCK_SYMBOLS = [
+  'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'RELIANCE', 'HINDUNILVR',
+  'ITC', 'SBIN', 'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK',
+  'WIPRO', 'HCLTECH', 'ASIANPAINT', 'MARUTI', 'TITAN', 'BAJFINANCE'
+  // Add more as needed
+]
+
+export const SECTORS = [
+  'IT', 'Banking', 'Pharma', 'Auto', 'FMCG', 'Energy',
+  'Telecom', 'Metals', 'Realty', 'Infrastructure'
+]
+
+export const TIMEFRAMES = [
+  { label: '1 Day', value: '1D' },
+  { label: '1 Week', value: '1W' },
+  { label: '1 Month', value: '1M' },
+  { label: '3 Months', value: '3M' },
+  { label: '6 Months', value: '6M' },
+  { label: '1 Year', value: '1Y' }
+]
+
+export const INTERVALS = [
+  { label: '1 Minute', value: '1m' },
+  { label: '5 Minutes', value: '5m' },
+  { label: '15 Minutes', value: '15m' },
+  { label: '1 Hour', value: '1H' },
+  { label: '1 Day', value: '1D' }
+]
+
+export const RECOMMENDATION_COLORS = {
+  BUY: 'success',
+  HOLD: 'warning',
+  SELL: 'danger'
+}
+
+export const RISK_LEVELS = {
+  LOW: 'Low Risk',
+  MODERATE: 'Moderate Risk',
+  HIGH: 'High Risk'
+}
+
+export const CONFIDENCE_LEVELS = {
+  HIGH: 'High Confidence',
+  MEDIUM: 'Medium Confidence',
+  LOW: 'Low Confidence'
+}
+```
+
+### `frontend/src/utils/theme.js`
+```javascript
+export const theme = {
+  colors: {
+    primary: {
+      50: '#eff6ff',
+      100: '#dbeafe',
+      500: '#3b82f6',
+      600: '#2563eb',
+      700: '#1d4ed8'
+    },
+    success: {
+      50: '#f0fdf4',
+      100: '#dcfce7',
+      500: '#10b981',
+      600: '#059669'
+    },
+    danger: {
+      50: '#fef2f2',
+      100: '#fee2e2',
+      500: '#ef4444',
+      600: '#dc2626'
+    },
+    warning: {
+      50: '#fffbeb',
+      100: '#fef3c7',
+      500: '#f59e0b',
+      600: '#d97706'
+    }
+  },
+  spacing: {
+    xs: '0.25rem',
+    sm: '0.5rem',
+    md: '1rem',
+    lg: '1.5rem',
+    xl: '2rem'
+  },
+  borderRadius: {
+    sm: '0.25rem',
+    md: '0.5rem',
+    lg: '0.75rem',
+    xl: '1rem'
+  }
+}
+```
+
+---
+
+## Frontend Public Files
+
+### `frontend/public/index.html`
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="AI-Powered Stock Analysis Platform for Indian Markets" />
+    <meta name="keywords" content="stock analysis, AI, Indian stocks, Nifty, stock prediction" />
+    <title>Nifty Stock Intelligence Platform</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+```
+
+### `frontend/public/favicon.ico`
+*(Binary file - you'll need to create this separately)*
+
+---
+
+**Shall I continue with:**
+1. ✅ **Ingestor missing files** (BSE/SEBI fetchers, `__init__.py`)
+2. ✅ **All documentation files** (ADRs 3,5,6,7,8, architecture docs, guides, security, operations)
+3. ✅ **Scripts** (deploy.sh, build-images.sh, init-terraform.sh, etc.)
+4. ✅ **GitHub Actions** (CI/CD workflows)
+5. ✅ **Root files** (LICENSE, CONTRIBUTING.md, CHANGELOG.md, ROADMAP.md, .gitignore, .dockerignore)
+
+Let me know - we're making great progress! 🚀

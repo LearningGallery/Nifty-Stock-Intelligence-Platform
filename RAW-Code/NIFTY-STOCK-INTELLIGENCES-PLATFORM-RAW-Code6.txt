@@ -1,0 +1,929 @@
+# 🚀 NIFTY STOCK INTELLIGENCE PLATFORM - Part 7
+
+Continuing with Backend Services (Orchestration, RAG, Analysis)...
+
+---
+
+#### `backend/app/api/v1/analysis.py`
+
+```python
+"""
+Stock Analysis API Endpoints
+"""
+from fastapi import APIRouter, HTTPException, Depends, status
+from typing import Optional, Dict, Any
+
+from app.models.stock import StockAnalysisRequest, StockAnalysisResponse
+from app.services.orchestration import OrchestrationService
+from app.core.security import get_optional_user
+from app.core.logging import logger
+
+router = APIRouter()
+
+
+@router.post("/comprehensive", response_model=StockAnalysisResponse)
+async def comprehensive_analysis(
+    request: StockAnalysisRequest,
+    user: Optional[Dict[str, Any]] = Depends(get_optional_user)
+) -> StockAnalysisResponse:
+    """
+    Get comprehensive stock analysis with AI-powered insights
+    
+    Includes:
+    - Technical analysis with indicators
+    - Fundamental analysis with key metrics
+    - Sentiment analysis from news
+    - Price targets and recommendations
+    - Risk assessment
+    """
+    try:
+        logger.info(f"Starting comprehensive analysis for {request.stock_symbol}")
+        
+        orchestration_service = OrchestrationService()
+        
+        analysis = await orchestration_service.generate_comprehensive_analysis(
+            stock_symbol=request.stock_symbol,
+            analysis_type=request.analysis_type,
+            timeframe=request.timeframe
+        )
+        
+        logger.info(f"Completed analysis for {request.stock_symbol}")
+        
+        return analysis
+        
+    except Exception as e:
+        logger.exception(f"Error in comprehensive analysis: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to analyze {request.stock_symbol}"
+        )
+
+
+@router.get("/{symbol}/quick")
+async def quick_analysis(
+    symbol: str,
+    user: Optional[Dict[str, Any]] = Depends(get_optional_user)
+):
+    """
+    Get quick analysis snapshot (cached for 5 minutes)
+    
+    Returns: Basic recommendation, current price, and key signals
+    """
+    try:
+        orchestration_service = OrchestrationService()
+        
+        quick_data = await orchestration_service.get_quick_analysis(symbol)
+        
+        return quick_data
+        
+    except Exception as e:
+        logger.exception(f"Error in quick analysis: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get quick analysis for {symbol}"
+        )
+```
+
+---
+
+#### `backend/app/services/orchestration.py`
+
+```python
+"""
+Orchestration Service
+Coordinates all analysis components and LLM interaction
+"""
+import json
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+
+from app.services.bedrock_service import BedrockService
+from app.services.rag_service import RAGService
+from app.services.technical_analysis import TechnicalAnalysisService
+from app.services.fundamental_analysis import FundamentalAnalysisService
+from app.services.sentiment_analysis import SentimentAnalysisService
+from app.services.cache_service import CacheService
+from app.services.stock_data_service import StockDataService
+from app.models.stock import (
+    StockAnalysisResponse,
+    RecommendationType,
+    ConfidenceLevel,
+    RiskLevel,
+    TimeframeTarget,
+    TechnicalSignal
+)
+from app.prompts.system_prompts import SYSTEM_PROMPT, ANALYSIS_PROMPT_TEMPLATE
+from app.core.logging import logger
+from app.core.exceptions import StockDataException
+
+
+class OrchestrationService:
+    """
+    Orchestrates multi-component stock analysis workflow
+    """
+    
+    def __init__(self):
+        self.bedrock_service = BedrockService()
+        self.rag_service = RAGService()
+        self.technical_service = TechnicalAnalysisService()
+        self.fundamental_service = FundamentalAnalysisService()
+        self.sentiment_service = SentimentAnalysisService()
+        self.cache_service = CacheService()
+        self.stock_service = StockDataService()
+    
+    async def process_chat_message(
+        self,
+        message: str,
+        session_id: str,
+        conversation_history: List[Dict[str, Any]],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Process a chat message with full context awareness
+        """
+        logger.info(f"Processing chat message for session {session_id}")
+        
+        # Extract stock symbol from message if present
+        stock_symbol = await self._extract_stock_symbol(message)
+        
+        # Retrieve relevant documents via RAG
+        rag_context = await self.rag_service.retrieve_relevant_documents(
+            query=message,
+            stock_symbol=stock_symbol,
+            top_k=5
+        )
+        
+        # If stock analysis is requested, gather analysis data
+        analysis_data = None
+        if stock_symbol:
+            logger.info(f"Stock analysis requested for: {stock_symbol}")
+            analysis_data = await self._gather_analysis_data(stock_symbol)
+        
+        # Build prompt with all context
+        prompt = await self._build_chat_prompt(
+            message=message,
+            conversation_history=conversation_history,
+            rag_context=rag_context,
+            analysis_data=analysis_data,
+            context=context
+        )
+        
+        # Get LLM response
+        llm_response = await self.bedrock_service.generate_response(
+            prompt=prompt,
+            system_prompt=SYSTEM_PROMPT,
+            max_tokens=4096,
+            temperature=0.7
+        )
+        
+        # Format response
+        response = {
+            "content": llm_response["content"],
+            "analysis_data": analysis_data,
+            "sources": rag_context.get("sources", []),
+            "stock_symbol": stock_symbol
+        }
+        
+        return response
+    
+    async def generate_comprehensive_analysis(
+        self,
+        stock_symbol: str,
+        analysis_type: str = "comprehensive",
+        timeframe: str = "short_term"
+    ) -> StockAnalysisResponse:
+        """
+        Generate complete stock analysis with all components
+        """
+        logger.info(f"Generating comprehensive analysis for {stock_symbol}")
+        
+        # Check cache first
+        cache_key = f"analysis:{stock_symbol}:{timeframe}"
+        cached = await self.cache_service.get(cache_key)
+        if cached:
+            logger.info(f"Returning cached analysis for {stock_symbol}")
+            return StockAnalysisResponse(**cached)
+        
+        # Gather all analysis components in parallel
+        try:
+            analysis_data = await self._gather_analysis_data(stock_symbol)
+            
+            # Build structured prompt for LLM
+            prompt = self._build_analysis_prompt(
+                stock_symbol=stock_symbol,
+                analysis_data=analysis_data,
+                timeframe=timeframe
+            )
+            
+            # Get LLM analysis
+            llm_response = await self.bedrock_service.generate_response(
+                prompt=prompt,
+                system_prompt=SYSTEM_PROMPT,
+                max_tokens=4096,
+                temperature=0.5  # Lower temp for more consistent analysis
+            )
+            
+            # Parse and structure response
+            structured_analysis = await self._structure_analysis_response(
+                stock_symbol=stock_symbol,
+                llm_response=llm_response,
+                analysis_data=analysis_data,
+                timeframe=timeframe
+            )
+            
+            # Cache result
+            await self.cache_service.set(
+                cache_key,
+                structured_analysis.dict(),
+                ttl=300  # 5 minutes
+            )
+            
+            logger.info(f"Completed comprehensive analysis for {stock_symbol}")
+            
+            return structured_analysis
+            
+        except Exception as e:
+            logger.exception(f"Error generating analysis for {stock_symbol}: {e}")
+            raise StockDataException(
+                message=f"Failed to analyze {stock_symbol}",
+                details={"error": str(e)}
+            )
+    
+    async def get_quick_analysis(self, stock_symbol: str) -> Dict[str, Any]:
+        """
+        Get quick analysis snapshot (lightweight, cached)
+        """
+        cache_key = f"quick_analysis:{stock_symbol}"
+        cached = await self.cache_service.get(cache_key)
+        if cached:
+            return cached
+        
+        # Get current price and basic data
+        price_data = await self.stock_service.get_current_price(stock_symbol)
+        
+        # Get simple technical signal
+        technical_signal = await self.technical_service.get_simple_signal(stock_symbol)
+        
+        # Get recent sentiment
+        sentiment = await self.sentiment_service.get_latest_sentiment(stock_symbol)
+        
+        quick_data = {
+            "stock_symbol": stock_symbol,
+            "current_price": price_data.get("current_price"),
+            "change_percent": price_data.get("change_percent"),
+            "technical_signal": technical_signal,
+            "sentiment": sentiment.get("sentiment", "neutral"),
+            "recommendation": self._derive_quick_recommendation(
+                technical_signal, sentiment
+            ),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Cache for 5 minutes
+        await self.cache_service.set(cache_key, quick_data, ttl=300)
+        
+        return quick_data
+    
+    # ============================================
+    # Private Helper Methods
+    # ============================================
+    
+    async def _extract_stock_symbol(self, message: str) -> Optional[str]:
+        """
+        Extract stock symbol from message using regex and validation
+        """
+        import re
+        
+        # Common Nifty 100-250 stock symbols pattern
+        # Look for 2-10 uppercase letters (stock symbols)
+        pattern = r'\b([A-Z]{2,10})\b'
+        matches = re.findall(pattern, message.upper())
+        
+        if matches:
+            # Validate against known symbols
+            for match in matches:
+                if await self.stock_service.is_valid_symbol(match):
+                    return match
+        
+        return None
+    
+    async def _gather_analysis_data(self, stock_symbol: str) -> Dict[str, Any]:
+        """
+        Gather all analysis components for a stock
+        """
+        import asyncio
+        
+        # Run all analysis components concurrently
+        technical_task = self.technical_service.analyze(stock_symbol)
+        fundamental_task = self.fundamental_service.analyze(stock_symbol)
+        sentiment_task = self.sentiment_service.analyze(stock_symbol)
+        price_task = self.stock_service.get_current_price(stock_symbol)
+        
+        technical, fundamental, sentiment, price_data = await asyncio.gather(
+            technical_task,
+            fundamental_task,
+            sentiment_task,
+            price_task,
+            return_exceptions=True
+        )
+        
+        # Handle any exceptions
+        if isinstance(technical, Exception):
+            logger.error(f"Technical analysis failed: {technical}")
+            technical = {}
+        if isinstance(fundamental, Exception):
+            logger.error(f"Fundamental analysis failed: {fundamental}")
+            fundamental = {}
+        if isinstance(sentiment, Exception):
+            logger.error(f"Sentiment analysis failed: {sentiment}")
+            sentiment = {}
+        if isinstance(price_data, Exception):
+            logger.error(f"Price data fetch failed: {price_data}")
+            price_data = {}
+        
+        return {
+            "technical": technical,
+            "fundamental": fundamental,
+            "sentiment": sentiment,
+            "price_data": price_data
+        }
+    
+    async def _build_chat_prompt(
+        self,
+        message: str,
+        conversation_history: List[Dict[str, Any]],
+        rag_context: Dict[str, Any],
+        analysis_data: Optional[Dict[str, Any]],
+        context: Dict[str, Any]
+    ) -> str:
+        """
+        Build comprehensive prompt for chat interaction
+        """
+        prompt_parts = []
+        
+        # Add conversation history
+        if conversation_history:
+            prompt_parts.append("## Conversation History:")
+            for msg in conversation_history[-5:]:  # Last 5 messages
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                prompt_parts.append(f"{role.upper()}: {content}")
+            prompt_parts.append("")
+        
+        # Add RAG context
+        if rag_context and rag_context.get("documents"):
+            prompt_parts.append("## Relevant Information from Knowledge Base:")
+            for doc in rag_context["documents"]:
+                prompt_parts.append(f"- {doc.get('content', '')[:500]}")
+            prompt_parts.append("")
+        
+        # Add analysis data if available
+        if analysis_data:
+            prompt_parts.append("## Stock Analysis Data:")
+            prompt_parts.append(json.dumps(analysis_data, indent=2))
+            prompt_parts.append("")
+        
+        # Add current user message
+        prompt_parts.append("## Current User Query:")
+        prompt_parts.append(message)
+        prompt_parts.append("")
+        
+        prompt_parts.append("Please provide a comprehensive, actionable response based on the above information.")
+        
+        return "\n".join(prompt_parts)
+    
+    def _build_analysis_prompt(
+        self,
+        stock_symbol: str,
+        analysis_data: Dict[str, Any],
+        timeframe: str
+    ) -> str:
+        """
+        Build structured prompt for comprehensive analysis
+        """
+        return ANALYSIS_PROMPT_TEMPLATE.format(
+            stock_symbol=stock_symbol,
+            technical_data=json.dumps(analysis_data.get("technical", {}), indent=2),
+            fundamental_data=json.dumps(analysis_data.get("fundamental", {}), indent=2),
+            sentiment_data=json.dumps(analysis_data.get("sentiment", {}), indent=2),
+            price_data=json.dumps(analysis_data.get("price_data", {}), indent=2),
+            timeframe=timeframe
+        )
+    
+    async def _structure_analysis_response(
+        self,
+        stock_symbol: str,
+        llm_response: Dict[str, Any],
+        analysis_data: Dict[str, Any],
+        timeframe: str
+    ) -> StockAnalysisResponse:
+        """
+        Structure LLM response into StockAnalysisResponse model
+        """
+        # Extract structured data from LLM response
+        content = llm_response.get("content", "")
+        
+        # Parse LLM response (assuming JSON or structured text)
+        # This is a simplified version; implement robust parsing
+        try:
+            # Attempt to extract JSON from response
+            import re
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+            else:
+                # Fallback: create structure from raw analysis data
+                parsed = self._create_fallback_structure(analysis_data)
+        except:
+            parsed = self._create_fallback_structure(analysis_data)
+        
+        # Get price data
+        price_data = analysis_data.get("price_data", {})
+        technical = analysis_data.get("technical", {})
+        fundamental = analysis_data.get("fundamental", {})
+        sentiment = analysis_data.get("sentiment", {})
+        
+        # Build response
+        return StockAnalysisResponse(
+            stock_symbol=stock_symbol,
+            company_name=price_data.get("company_name", stock_symbol),
+            sector=fundamental.get("sector", "Unknown"),
+            market_cap=fundamental.get("market_cap", 0.0),
+            current_price=price_data.get("current_price", 0.0),
+            
+            recommendation=parsed.get("recommendation", RecommendationType.HOLD),
+            confidence_level=parsed.get("confidence_level", ConfidenceLevel.MEDIUM),
+            risk_level=parsed.get("risk_level", RiskLevel.MODERATE),
+            
+            pros=parsed.get("pros", []),
+            cons=parsed.get("cons", []),
+            
+            short_term_target=TimeframeTarget(**parsed.get("short_term_target", {
+                "entry_point": price_data.get("current_price", 0.0),
+                "target_1": price_data.get("current_price", 0.0) * 1.05,
+                "stop_loss": price_data.get("current_price", 0.0) * 0.95,
+                "risk_reward_ratio": "1:1",
+                "expected_upside_percent": 5.0
+            })),
+            
+            long_term_target=None,
+            
+            technical_signals=[
+                TechnicalSignal(**sig) for sig in parsed.get("technical_signals", [])
+            ],
+            technical_score=technical.get("score", 5.0),
+            
+            fundamental_data=fundamental.get("metrics", {}),
+            fundamental_score=fundamental.get("score", 5.0),
+            
+            news_summary=sentiment.get("summary", ""),
+            sentiment_score=sentiment.get("score", 5.0),
+            recent_news=sentiment.get("recent_news", []),
+            
+            risk_factors=parsed.get("risk_factors", []),
+            action_items=parsed.get("action_items", []),
+            
+            analysis_timestamp=datetime.utcnow(),
+            data_sources=["NSE", "BSE", "Screener.in", "NewsAPI", "Bedrock AI"]
+        )
+    
+    def _create_fallback_structure(self, analysis_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create fallback structure when LLM response parsing fails
+        """
+        technical = analysis_data.get("technical", {})
+        fundamental = analysis_data.get("fundamental", {})
+        sentiment = analysis_data.get("sentiment", {})
+        
+        return {
+            "recommendation": RecommendationType.HOLD,
+            "confidence_level": ConfidenceLevel.MEDIUM,
+            "risk_level": RiskLevel.MODERATE,
+            "pros": fundamental.get("strengths", [])[:5],
+            "cons": fundamental.get("weaknesses", [])[:5],
+            "technical_signals": [],
+            "risk_factors": fundamental.get("red_flags", []),
+            "action_items": ["Review detailed analysis", "Monitor price action"]
+        }
+    
+    def _derive_quick_recommendation(
+        self,
+        technical_signal: str,
+        sentiment: Dict[str, Any]
+    ) -> str:
+        """
+        Derive quick recommendation from technical and sentiment signals
+        """
+        if technical_signal == "bullish" and sentiment.get("score", 5) > 6:
+            return "BUY"
+        elif technical_signal == "bearish" or sentiment.get("score", 5) < 4:
+            return "SELL"
+        else:
+            return "HOLD"
+```
+
+---
+
+#### `backend/app/services/bedrock_service.py`
+
+```python
+"""
+Amazon Bedrock Service
+Handles all LLM interactions
+"""
+import json
+from typing import Dict, Any, Optional, AsyncIterator
+import boto3
+from botocore.exceptions import ClientError
+
+from app.config import settings
+from app.core.logging import logger
+from app.core.exceptions import BedrockException
+
+
+class BedrockService:
+    """
+    Service for interacting with Amazon Bedrock
+    """
+    
+    def __init__(self):
+        self.client = boto3.client(
+            "bedrock-runtime",
+            region_name=settings.AWS_REGION
+        )
+        self.model_id = settings.BEDROCK_MODEL_ID
+        self.max_tokens = settings.BEDROCK_MAX_TOKENS
+        self.temperature = settings.BEDROCK_TEMPERATURE
+    
+    async def generate_response(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stop_sequences: Optional[list] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate response from Claude via Bedrock
+        """
+        try:
+            # Build request body based on model
+            if "claude" in self.model_id.lower():
+                body = self._build_claude_request(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    max_tokens=max_tokens or self.max_tokens,
+                    temperature=temperature or self.temperature,
+                    stop_sequences=stop_sequences
+                )
+            else:
+                raise BedrockException(f"Unsupported model: {self.model_id}")
+            
+            # Invoke model
+            response = self.client.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps(body)
+            )
+            
+            # Parse response
+            response_body = json.loads(response['body'].read())
+            
+            # Extract content based on model response format
+            if "claude" in self.model_id.lower():
+                content = response_body.get("content", [{}])[0].get("text", "")
+                usage = {
+                    "input_tokens": response_body.get("usage", {}).get("input_tokens", 0),
+                    "output_tokens": response_body.get("usage", {}).get("output_tokens", 0)
+                }
+            else:
+                content = response_body.get("completion", "")
+                usage = {}
+            
+            logger.info(f"Bedrock response generated. Tokens: {usage}")
+            
+            return {
+                "content": content,
+                "usage": usage,
+                "model_id": self.model_id
+            }
+            
+        except ClientError as e:
+            logger.error(f"Bedrock API error: {e}")
+            raise BedrockException(
+                message="Failed to generate response from Bedrock",
+                details={"error": str(e)}
+            )
+        except Exception as e:
+            logger.exception(f"Unexpected error in Bedrock service: {e}")
+            raise BedrockException(
+                message="Unexpected error generating response",
+                details={"error": str(e)}
+            )
+    
+    async def generate_streaming_response(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None
+    ) -> AsyncIterator[str]:
+        """
+        Generate streaming response from Bedrock
+        """
+        try:
+            body = self._build_claude_request(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens or self.max_tokens,
+                temperature=temperature or self.temperature
+            )
+            
+            response = self.client.invoke_model_with_response_stream(
+                modelId=self.model_id,
+                body=json.dumps(body)
+            )
+            
+            stream = response.get('body')
+            if stream:
+                for event in stream:
+                    chunk = event.get('chunk')
+                    if chunk:
+                        chunk_data = json.loads(chunk.get('bytes').decode())
+                        
+                        if chunk_data.get('type') == 'content_block_delta':
+                            delta = chunk_data.get('delta', {})
+                            text = delta.get('text', '')
+                            if text:
+                                yield text
+            
+        except Exception as e:
+            logger.exception(f"Streaming error: {e}")
+            raise BedrockException(
+                message="Failed to stream response",
+                details={"error": str(e)}
+            )
+    
+    async def generate_embedding(self, text: str) -> list[float]:
+        """
+        Generate embedding using Titan Embeddings
+        """
+        try:
+            body = json.dumps({
+                "inputText": text
+            })
+            
+            response = self.client.invoke_model(
+                modelId=settings.BEDROCK_EMBEDDING_MODEL,
+                body=body
+            )
+            
+            response_body = json.loads(response['body'].read())
+            embedding = response_body.get("embedding", [])
+            
+            return embedding
+            
+        except Exception as e:
+            logger.error(f"Embedding generation error: {e}")
+            raise BedrockException(
+                message="Failed to generate embedding",
+                details={"error": str(e)}
+            )
+    
+    def _build_claude_request(
+        self,
+        prompt: str,
+        system_prompt: Optional[str],
+        max_tokens: int,
+        temperature: float,
+        stop_sequences: Optional[list] = None
+    ) -> Dict[str, Any]:
+        """
+        Build request body for Claude models
+        """
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        }
+        
+        if system_prompt:
+            body["system"] = system_prompt
+        
+        if stop_sequences:
+            body["stop_sequences"] = stop_sequences
+        
+        return body
+```
+
+---
+
+#### `backend/app/services/rag_service.py`
+
+```python
+"""
+RAG (Retrieval-Augmented Generation) Service
+Handles document retrieval from OpenSearch
+"""
+import json
+from typing import Dict, Any, List, Optional
+from opensearchpy import AsyncOpenSearch, AWSV4SignerAuth, RequestsHttpConnection
+from boto3 import Session
+
+from app.config import settings
+from app.core.logging import logger
+from app.core.exceptions import OpenSearchException
+
+
+class RAGService:
+    """
+    Retrieval-Augmented Generation Service
+    """
+    
+    def __init__(self):
+        self.index_name = settings.OPENSEARCH_INDEX
+        self.client = self._create_client()
+        self.top_k = settings.RAG_TOP_K
+        self.similarity_threshold = settings.RAG_SIMILARITY_THRESHOLD
+    
+    def _create_client(self) -> AsyncOpenSearch:
+        """
+        Create authenticated OpenSearch client
+        """
+        session = Session()
+        credentials = session.get_credentials()
+        auth = AWSV4SignerAuth(credentials, settings.AWS_REGION, "es")
+        
+        # Extract host from endpoint
+        host = settings.OPENSEARCH_ENDPOINT.replace("https://", "").replace("http://", "")
+        
+        return AsyncOpenSearch(
+            hosts=[{"host": host, "port": 443}],
+            http_auth=auth,
+            use_ssl=True,
+            verify_certs=True,
+            connection_class=RequestsHttpConnection,
+            timeout=30
+        )
+    
+    async def retrieve_relevant_documents(
+        self,
+        query: str,
+        stock_symbol: Optional[str] = None,
+        top_k: Optional[int] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Retrieve relevant documents using vector search
+        """
+        try:
+            # Generate query embedding
+            from app.services.bedrock_service import BedrockService
+            bedrock_service = BedrockService()
+            query_embedding = await bedrock_service.generate_embedding(query)
+            
+            # Build search query
+            search_body = self._build_search_query(
+                query_embedding=query_embedding,
+                stock_symbol=stock_symbol,
+                top_k=top_k or self.top_k,
+                filters=filters
+            )
+            
+            # Execute search
+            response = await self.client.search(
+                index=self.index_name,
+                body=search_body
+            )
+            
+            # Process results
+            documents = self._process_search_results(response)
+            
+            logger.info(f"Retrieved {len(documents)} documents for query: {query[:50]}")
+            
+            return {
+                "documents": documents,
+                "sources": [doc.get("metadata", {}) for doc in documents],
+                "total_hits": response["hits"]["total"]["value"]
+            }
+            
+        except Exception as e:
+            logger.error(f"RAG retrieval error: {e}")
+            raise OpenSearchException(
+                message="Failed to retrieve documents",
+                details={"error": str(e)}
+            )
+    
+    def _build_search_query(
+        self,
+        query_embedding: List[float],
+        stock_symbol: Optional[str],
+        top_k: int,
+        filters: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Build OpenSearch query with vector search and filters
+        """
+        query = {
+            "size": top_k,
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "knn": {
+                                "embedding": {
+                                    "vector": query_embedding,
+                                    "k": top_k
+                                }
+                            }
+                        }
+                    ],
+                    "filter": []
+                }
+            },
+            "_source": ["content", "metadata", "stock_symbol", "document_type", "timestamp"]
+        }
+        
+        # Add stock symbol filter
+        if stock_symbol:
+            query["query"]["bool"]["filter"].append({
+                "term": {"stock_symbol.keyword": stock_symbol.upper()}
+            })
+        
+        # Add custom filters
+        if filters:
+            for key, value in filters.items():
+                query["query"]["bool"]["filter"].append({
+                    "term": {f"{key}.keyword": value}
+                })
+        
+        # Add minimum score threshold
+        query["min_score"] = self.similarity_threshold
+        
+        return query
+    
+    def _process_search_results(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Process OpenSearch results into structured format
+        """
+        documents = []
+        
+        for hit in response.get("hits", {}).get("hits", []):
+            source = hit["_source"]
+            documents.append({
+                "content": source.get("content", ""),
+                "metadata": source.get("metadata", {}),
+                "stock_symbol": source.get("stock_symbol"),
+                "document_type": source.get("document_type"),
+                "timestamp": source.get("timestamp"),
+                "score": hit["_score"]
+            })
+        
+        return documents
+    
+    async def index_document(
+        self,
+        document_id: str,
+        content: str,
+        embedding: List[float],
+        metadata: Dict[str, Any],
+        stock_symbol: Optional[str] = None
+    ):
+        """
+        Index a document with its embedding
+        """
+        try:
+            document = {
+                "content": content,
+                "embedding": embedding,
+                "metadata": metadata,
+                "stock_symbol": stock_symbol,
+                "document_type": metadata.get("type"),
+                "timestamp": metadata.get("timestamp")
+            }
+            
+            await self.client.index(
+                index=self.index_name,
+                id=document_id,
+                body=document
+            )
+            
+            logger.info(f"Indexed document: {document_id}")
+            
+        except Exception as e:
+            logger.error(f"Document indexing error: {e}")
+            raise OpenSearchException(
+                message="Failed to index document",
+                details={"error": str(e), "document_id": document_id}
+            )
+    
+    async def close(self):
+        """
+        Close OpenSearch client connection
+        """
+        await self.client

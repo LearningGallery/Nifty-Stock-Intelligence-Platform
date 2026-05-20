@@ -1,0 +1,856 @@
+# 🚀 NIFTY STOCK INTELLIGENCE PLATFORM - Part 5
+
+Continuing with Backend Application Code...
+
+---
+
+#### `backend/requirements.txt` (continued)
+
+```txt
+# Security (continued)
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+cryptography==41.0.7
+
+# Validation & Parsing
+email-validator==2.1.0
+python-dotenv==1.0.0
+
+# Utilities
+tenacity==8.2.3
+cachetools==5.3.2
+ujson==5.9.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+httpx==0.26.0
+pytest-mock==3.12.0
+faker==22.0.0
+```
+
+---
+
+#### `backend/requirements-dev.txt`
+
+```txt
+-r requirements.txt
+
+# Development Tools
+black==23.12.1
+flake8==7.0.0
+mypy==1.8.0
+isort==5.13.2
+pre-commit==3.6.0
+
+# Documentation
+mkdocs==1.5.3
+mkdocs-material==9.5.3
+
+# Debugging
+ipython==8.19.0
+ipdb==0.13.13
+```
+
+---
+
+#### `backend/Dockerfile`
+
+```dockerfile
+# Multi-stage build for optimized image size
+FROM python:3.11-slim as builder
+
+# Install system dependencies for TA-Lib and other libraries
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install TA-Lib
+RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+    tar -xzf ta-lib-0.4.0-src.tar.gz && \
+    cd ta-lib/ && \
+    ./configure --prefix=/usr && \
+    make && \
+    make install && \
+    cd .. && \
+    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# ============================================
+# Final stage
+# ============================================
+FROM python:3.11-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libgomp1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TA-Lib from builder
+COPY --from=builder /usr/lib/libta_lib.* /usr/lib/
+COPY --from=builder /usr/include/ta-lib/ /usr/include/ta-lib/
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser && \
+    mkdir -p /app && \
+    chown -R appuser:appuser /app
+
+# Set working directory
+WORKDIR /app
+
+# Copy Python packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY --chown=appuser:appuser ./app ./app
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run application
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+```
+
+---
+
+#### `backend/.dockerignore`
+
+```
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.env
+.env.*
+.venv
+venv/
+*.log
+.git
+.gitignore
+README.md
+tests/
+.mypy_cache
+.ruff_cache
+```
+
+---
+
+#### `backend/.env.example`
+
+```bash
+# Environment
+ENVIRONMENT=dev
+AWS_REGION=ap-south-1
+LOG_LEVEL=DEBUG
+
+# Bedrock Configuration
+BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20240620-v1:0
+BEDROCK_EMBEDDING_MODEL=amazon.titan-embed-text-v2:0
+BEDROCK_MAX_TOKENS=4096
+BEDROCK_TEMPERATURE=0.7
+
+# OpenSearch Configuration
+OPENSEARCH_ENDPOINT=https://your-opensearch-endpoint.ap-south-1.es.amazonaws.com
+OPENSEARCH_INDEX=stock-documents
+OPENSEARCH_USERNAME=admin
+OPENSEARCH_PASSWORD=Admin@12345
+
+# DynamoDB Configuration
+CHAT_SESSIONS_TABLE=nifty-stock-intel-dev-chat-sessions
+CHAT_MESSAGES_TABLE=nifty-stock-intel-dev-chat-messages
+DOCUMENT_METADATA_TABLE=nifty-stock-intel-dev-document-metadata
+STOCK_ANALYSIS_CACHE_TABLE=nifty-stock-intel-dev-stock-analysis-cache
+
+# Cognito Configuration
+COGNITO_USER_POOL_ID=ap-south-1_XXXXXXXXX
+COGNITO_CLIENT_ID=your-client-id
+COGNITO_REGION=ap-south-1
+
+# S3 Configuration
+DATA_LAKE_BUCKET=nifty-stock-intel-dev-data-lake-xxxxx
+
+# Redis Configuration
+REDIS_ENDPOINT=your-redis-endpoint.cache.amazonaws.com
+REDIS_PORT=6379
+REDIS_DB=0
+CACHE_TTL_SECONDS=300
+
+# API Keys (stored in Secrets Manager)
+API_KEYS_SECRET_NAME=nifty-stock-intel-dev-backend-api-keys
+
+# Application Configuration
+ENABLE_XRAY=true
+ENABLE_CORS=true
+ALLOWED_ORIGINS=https://yourdomain.com,http://localhost:3000
+
+# RAG Configuration
+RAG_TOP_K=5
+RAG_SIMILARITY_THRESHOLD=0.7
+CHUNK_SIZE=512
+CHUNK_OVERLAP=50
+
+# Rate Limiting
+RATE_LIMIT_PER_MINUTE=60
+RATE_LIMIT_PER_HOUR=1000
+```
+
+---
+
+#### `backend/app/main.py`
+
+```python
+"""
+Main FastAPI Application
+Nifty Stock Intelligence Platform
+"""
+import logging
+import time
+from contextlib import asynccontextmanager
+from typing import Dict, Any
+
+from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.config import settings
+from app.core.logging import setup_logging, logger
+from app.core.exceptions import AppException
+from app.api.v1 import chat, stocks, analysis, health
+from app.dependencies import get_aws_clients
+
+# AWS X-Ray (optional)
+if settings.ENABLE_XRAY:
+    from aws_xray_sdk.core import xray_recorder, patch_all
+    from aws_xray_sdk.ext.flask.middleware import XRayMiddleware
+    
+    xray_recorder.configure(service='NiftyStockIntelligence')
+    patch_all()
+
+
+# Setup logging
+setup_logging()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for startup and shutdown events
+    """
+    # Startup
+    logger.info("🚀 Starting Nifty Stock Intelligence Platform API")
+    logger.info(f"Environment: {settings.ENVIRONMENT}")
+    logger.info(f"AWS Region: {settings.AWS_REGION}")
+    
+    # Initialize AWS clients
+    try:
+        aws_clients = await get_aws_clients()
+        logger.info("✅ AWS clients initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize AWS clients: {e}")
+        raise
+    
+    # Warm up Bedrock connection
+    try:
+        await aws_clients["bedrock_runtime"].list_foundation_models()
+        logger.info("✅ Bedrock connection verified")
+    except Exception as e:
+        logger.warning(f"⚠️  Bedrock connection check failed: {e}")
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Shutting down Nifty Stock Intelligence Platform API")
+
+
+# Create FastAPI app
+app = FastAPI(
+    title="Nifty Stock Intelligence Platform API",
+    description="AI-Powered Real-Time Stock Analysis & Prediction Engine for Indian Equity Markets",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    lifespan=lifespan
+)
+
+
+# ============================================
+# Middleware Configuration
+# ============================================
+
+# CORS Middleware
+if settings.ENABLE_CORS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+# Gzip Compression
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+# Request timing middleware
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    
+    # Log request details
+    logger.info(
+        f"{request.method} {request.url.path} - "
+        f"Status: {response.status_code} - "
+        f"Duration: {process_time:.3f}s"
+    )
+    
+    return response
+
+
+# ============================================
+# Exception Handlers
+# ============================================
+
+@app.exception_handler(AppException)
+async def app_exception_handler(request: Request, exc: AppException):
+    """Handle custom application exceptions"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.error_code,
+            "message": exc.message,
+            "details": exc.details
+        }
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle request validation errors"""
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "VALIDATION_ERROR",
+            "message": "Invalid request data",
+            "details": exc.errors()
+        }
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Handle HTTP exceptions"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": "HTTP_ERROR",
+            "message": exc.detail
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle unexpected exceptions"""
+    logger.exception(f"Unexpected error: {exc}")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": "INTERNAL_SERVER_ERROR",
+            "message": "An unexpected error occurred. Please try again later."
+        }
+    )
+
+
+# ============================================
+# API Routers
+# ============================================
+
+app.include_router(
+    health.router,
+    tags=["Health"],
+    prefix=""
+)
+
+app.include_router(
+    chat.router,
+    tags=["Chat"],
+    prefix="/api/v1/chat"
+)
+
+app.include_router(
+    stocks.router,
+    tags=["Stocks"],
+    prefix="/api/v1/stocks"
+)
+
+app.include_router(
+    analysis.router,
+    tags=["Analysis"],
+    prefix="/api/v1/analysis"
+)
+
+
+# ============================================
+# Root Endpoint
+# ============================================
+
+@app.get("/", tags=["Root"])
+async def root() -> Dict[str, Any]:
+    """Root endpoint with API information"""
+    return {
+        "name": "Nifty Stock Intelligence Platform API",
+        "version": "1.0.0",
+        "status": "operational",
+        "environment": settings.ENVIRONMENT,
+        "documentation": {
+            "swagger": "/docs",
+            "redoc": "/redoc"
+        },
+        "endpoints": {
+            "health": "/health",
+            "chat": "/api/v1/chat",
+            "stocks": "/api/v1/stocks",
+            "analysis": "/api/v1/analysis"
+        }
+    }
+
+
+# ============================================
+# Main Entry Point
+# ============================================
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=settings.ENVIRONMENT == "dev",
+        log_level=settings.LOG_LEVEL.lower()
+    )
+```
+
+---
+
+#### `backend/app/config.py`
+
+```python
+"""
+Application Configuration
+Loads settings from environment variables
+"""
+from typing import List, Optional
+from pydantic_settings import BaseSettings
+from pydantic import Field, validator
+
+
+class Settings(BaseSettings):
+    """Application settings"""
+    
+    # Environment
+    ENVIRONMENT: str = Field(default="dev", env="ENVIRONMENT")
+    AWS_REGION: str = Field(default="ap-south-1", env="AWS_REGION")
+    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
+    
+    # Bedrock Configuration
+    BEDROCK_MODEL_ID: str = Field(
+        default="anthropic.claude-3-5-sonnet-20240620-v1:0",
+        env="BEDROCK_MODEL_ID"
+    )
+    BEDROCK_EMBEDDING_MODEL: str = Field(
+        default="amazon.titan-embed-text-v2:0",
+        env="BEDROCK_EMBEDDING_MODEL"
+    )
+    BEDROCK_MAX_TOKENS: int = Field(default=4096, env="BEDROCK_MAX_TOKENS")
+    BEDROCK_TEMPERATURE: float = Field(default=0.7, env="BEDROCK_TEMPERATURE")
+    
+    # OpenSearch Configuration
+    OPENSEARCH_ENDPOINT: str = Field(..., env="OPENSEARCH_ENDPOINT")
+    OPENSEARCH_INDEX: str = Field(default="stock-documents", env="OPENSEARCH_INDEX")
+    OPENSEARCH_USERNAME: Optional[str] = Field(default=None, env="OPENSEARCH_USERNAME")
+    OPENSEARCH_PASSWORD: Optional[str] = Field(default=None, env="OPENSEARCH_PASSWORD")
+    
+    # DynamoDB Configuration
+    CHAT_SESSIONS_TABLE: str = Field(..., env="CHAT_SESSIONS_TABLE")
+    CHAT_MESSAGES_TABLE: str = Field(..., env="CHAT_MESSAGES_TABLE")
+    DOCUMENT_METADATA_TABLE: str = Field(..., env="DOCUMENT_METADATA_TABLE")
+    STOCK_ANALYSIS_CACHE_TABLE: str = Field(..., env="STOCK_ANALYSIS_CACHE_TABLE")
+    
+    # Cognito Configuration
+    COGNITO_USER_POOL_ID: str = Field(..., env="COGNITO_USER_POOL_ID")
+    COGNITO_CLIENT_ID: str = Field(..., env="COGNITO_CLIENT_ID")
+    COGNITO_REGION: str = Field(default="ap-south-1", env="COGNITO_REGION")
+    
+    # S3 Configuration
+    DATA_LAKE_BUCKET: str = Field(..., env="DATA_LAKE_BUCKET")
+    
+    # Redis Configuration
+    REDIS_ENDPOINT: str = Field(..., env="REDIS_ENDPOINT")
+    REDIS_PORT: int = Field(default=6379, env="REDIS_PORT")
+    REDIS_DB: int = Field(default=0, env="REDIS_DB")
+    CACHE_TTL_SECONDS: int = Field(default=300, env="CACHE_TTL_SECONDS")
+    
+    # API Keys Secret
+    API_KEYS_SECRET_NAME: str = Field(..., env="API_KEYS_SECRET_NAME")
+    
+    # Application Configuration
+    ENABLE_XRAY: bool = Field(default=True, env="ENABLE_XRAY")
+    ENABLE_CORS: bool = Field(default=True, env="ENABLE_CORS")
+    ALLOWED_ORIGINS: List[str] = Field(
+        default=["http://localhost:3000"],
+        env="ALLOWED_ORIGINS"
+    )
+    
+    # RAG Configuration
+    RAG_TOP_K: int = Field(default=5, env="RAG_TOP_K")
+    RAG_SIMILARITY_THRESHOLD: float = Field(default=0.7, env="RAG_SIMILARITY_THRESHOLD")
+    CHUNK_SIZE: int = Field(default=512, env="CHUNK_SIZE")
+    CHUNK_OVERLAP: int = Field(default=50, env="CHUNK_OVERLAP")
+    
+    # Rate Limiting
+    RATE_LIMIT_PER_MINUTE: int = Field(default=60, env="RATE_LIMIT_PER_MINUTE")
+    RATE_LIMIT_PER_HOUR: int = Field(default=1000, env="RATE_LIMIT_PER_HOUR")
+    
+    @validator("ALLOWED_ORIGINS", pre=True)
+    def parse_origins(cls, v):
+        """Parse comma-separated origins"""
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",")]
+        return v
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+
+
+# Create settings instance
+settings = Settings()
+```
+
+---
+
+#### `backend/app/core/logging.py`
+
+```python
+"""
+Logging Configuration
+"""
+import logging
+import sys
+from pythonjsonlogger import jsonlogger
+
+from app.config import settings
+
+
+def setup_logging():
+    """Configure application logging"""
+    
+    # Create logger
+    logger = logging.getLogger()
+    logger.setLevel(getattr(logging, settings.LOG_LEVEL.upper()))
+    
+    # Remove existing handlers
+    logger.handlers = []
+    
+    # Create console handler
+    handler = logging.StreamHandler(sys.stdout)
+    
+    # JSON formatter for structured logging
+    formatter = jsonlogger.JsonFormatter(
+        "%(asctime)s %(name)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    
+    # Suppress noisy loggers
+    logging.getLogger("boto3").setLevel(logging.WARNING)
+    logging.getLogger("botocore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    
+    return logger
+
+
+# Create logger instance
+logger = logging.getLogger(__name__)
+```
+
+---
+
+#### `backend/app/core/exceptions.py`
+
+```python
+"""
+Custom Exception Classes
+"""
+from typing import Optional, Dict, Any
+
+
+class AppException(Exception):
+    """Base application exception"""
+    
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 500,
+        error_code: str = "INTERNAL_ERROR",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        self.message = message
+        self.status_code = status_code
+        self.error_code = error_code
+        self.details = details or {}
+        super().__init__(self.message)
+
+
+class BedrockException(AppException):
+    """Bedrock-related exceptions"""
+    
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            status_code=500,
+            error_code="BEDROCK_ERROR",
+            details=details
+        )
+
+
+class OpenSearchException(AppException):
+    """OpenSearch-related exceptions"""
+    
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            status_code=500,
+            error_code="OPENSEARCH_ERROR",
+            details=details
+        )
+
+
+class DynamoDBException(AppException):
+    """DynamoDB-related exceptions"""
+    
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            status_code=500,
+            error_code="DYNAMODB_ERROR",
+            details=details
+        )
+
+
+class StockDataException(AppException):
+    """Stock data retrieval exceptions"""
+    
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            status_code=404,
+            error_code="STOCK_DATA_ERROR",
+            details=details
+        )
+
+
+class ValidationException(AppException):
+    """Validation exceptions"""
+    
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            status_code=422,
+            error_code="VALIDATION_ERROR",
+            details=details
+        )
+
+
+class AuthenticationException(AppException):
+    """Authentication exceptions"""
+    
+    def __init__(self, message: str = "Authentication failed"):
+        super().__init__(
+            message=message,
+            status_code=401,
+            error_code="AUTHENTICATION_ERROR"
+        )
+
+
+class RateLimitException(AppException):
+    """Rate limiting exceptions"""
+    
+    def __init__(self, message: str = "Rate limit exceeded"):
+        super().__init__(
+            message=message,
+            status_code=429,
+            error_code="RATE_LIMIT_EXCEEDED"
+        )
+```
+
+---
+
+#### `backend/app/core/security.py`
+
+```python
+"""
+Security and Authentication Utilities
+"""
+import jwt
+from typing import Optional, Dict, Any
+from fastapi import HTTPException, Security, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError, jwt
+import boto3
+from botocore.exceptions import ClientError
+
+from app.config import settings
+from app.core.logging import logger
+from app.core.exceptions import AuthenticationException
+
+
+security = HTTPBearer()
+
+
+class CognitoTokenVerifier:
+    """Verify Cognito JWT tokens"""
+    
+    def __init__(self):
+        self.region = settings.COGNITO_REGION
+        self.user_pool_id = settings.COGNITO_USER_POOL_ID
+        self.client_id = settings.COGNITO_CLIENT_ID
+        self.keys = None
+    
+    async def get_public_keys(self) -> Dict[str, Any]:
+        """Fetch Cognito public keys for JWT verification"""
+        if self.keys:
+            return self.keys
+        
+        import httpx
+        
+        url = f"https://cognito-idp.{self.region}.amazonaws.com/{self.user_pool_id}/.well-known/jwks.json"
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                self.keys = response.json()
+                return self.keys
+        except Exception as e:
+            logger.error(f"Failed to fetch Cognito public keys: {e}")
+            raise AuthenticationException("Unable to verify token")
+    
+    async def verify_token(self, token: str) -> Dict[str, Any]:
+        """Verify and decode Cognito JWT token"""
+        try:
+            # Get public keys
+            keys = await self.get_public_keys()
+            
+            # Decode header to get key ID
+            headers = jwt.get_unverified_headers(token)
+            kid = headers['kid']
+            
+            # Find matching key
+            key = next((k for k in keys['keys'] if k['kid'] == kid), None)
+            if not key:
+                raise AuthenticationException("Invalid token")
+            
+            # Verify and decode token
+            payload = jwt.decode(
+                token,
+                key,
+                algorithms=['RS256'],
+                audience=self.client_id,
+                options={"verify_exp": True}
+            )
+            
+            return payload
+            
+        except JWTError as e:
+            logger.error(f"JWT verification failed: {e}")
+            raise AuthenticationException("Invalid or expired token")
+        except Exception as e:
+            logger.error(f"Token verification error: {e}")
+            raise AuthenticationException()
+
+
+# Create verifier instance
+token_verifier = CognitoTokenVerifier()
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Security(security)
+) -> Dict[str, Any]:
+    """
+    Dependency to get current authenticated user
+    """
+    token = credentials.credentials
+    user_data = await token_verifier.verify_token(token)
+    
+    return {
+        "user_id": user_data.get("sub"),
+        "email": user_data.get("email"),
+        "username": user_data.get("cognito:username"),
+        "token_payload": user_data
+    }
+
+
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security, auto_error=False)
+) -> Optional[Dict[str, Any]]:
+    """
+    Dependency to get current user if authenticated, None otherwise
+    """
+    if not credentials:
+        return None
+    
+    try:
+        return await get_current_user(credentials)
+    except AuthenticationException:
+        return None
+```
+
+---
+
+Due to length constraints, shall I continue with:
+1. **More Backend Code** (API endpoints, services, models)
+2. **Frontend React Application**
+3. **Lambda Ingestor Code**
+4. **Documentation** (ADRs, deployment guides, runbooks)
+
+Which would you prefer next?
