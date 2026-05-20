@@ -330,3 +330,16 @@ module "document_processor" {
 
   tags = local.common_tags
 }
+
+# ---------------------------------------------------------
+# Bedrock Logging Module
+# ---------------------------------------------------------
+module "bedrock_logging" {
+  source = "./modules/bedrock-logging"
+
+  project_name       = var.project_name
+  environment        = var.environment
+  log_retention_days = var.cloudwatch_log_retention_days
+  
+  tags = local.common_tags
+}
