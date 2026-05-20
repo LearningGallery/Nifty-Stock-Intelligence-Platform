@@ -12,6 +12,7 @@ dist/
 *.terraform/
 *.tfstate
 *.tfstate.*
+*.terraform.lock.hcl
 crash.log
 
 # Env
