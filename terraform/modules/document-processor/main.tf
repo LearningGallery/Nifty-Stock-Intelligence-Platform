@@ -50,6 +50,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
     id     = "delete-old-uploads"
     status = "Enabled"
 
+    filter {}
+
     expiration {
       days = var.upload_expiration_days
     }
@@ -187,7 +189,7 @@ resource "aws_lambda_function" "document_processor" {
         OPENSEARCH_INDEX         = var.opensearch_index
         BEDROCK_EMBEDDING_MODEL  = var.bedrock_embedding_model
         DOCUMENT_METADATA_TABLE  = var.document_metadata_table_name
-        AWS_REGION               = var.aws_region
+        #AWS_REGION               = var.aws_region
         UPLOAD_BUCKET            = aws_s3_bucket.uploads.id
       },
       var.lambda_environment_variables

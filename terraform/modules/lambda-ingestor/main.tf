@@ -30,6 +30,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
   rule {
     id     = "archive-old-data"
     status = "Enabled"
+    filter {}
 
     transition {
       days          = 90
@@ -114,7 +115,7 @@ resource "aws_lambda_function" "ingestor" {
   environment {
     variables = {
       DATA_LAKE_BUCKET = aws_s3_bucket.data_lake.id
-      AWS_REGION       = var.aws_region
+      #AWS_REGION       = var.aws_region
     }
   }
 
@@ -214,7 +215,7 @@ resource "aws_lambda_function" "etl" {
       OPENSEARCH_INDEX            = var.opensearch_index
       BEDROCK_EMBEDDING_MODEL     = var.bedrock_embedding_model
       DOCUMENT_METADATA_TABLE     = var.document_metadata_table_name
-      AWS_REGION                  = var.aws_region
+      #AWS_REGION                  = var.aws_region
     }
   }
 

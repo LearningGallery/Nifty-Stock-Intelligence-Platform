@@ -136,6 +136,18 @@ resource "aws_cloudwatch_log_resource_policy" "opensearch" {
   })
 }
 
+/*
+resource "aws_iam_service_linked_role" "opensearch" {
+  aws_service_name = "opensearchservice.amazonaws.com"
+  description      = "Service-linked role for Amazon OpenSearch Service VPC access"
+  
+  # Prevents crash if the role already exists in the AWS account
+  lifecycle {
+    ignore_changes = all
+  }
+}
+*/
+
 # ---------------------------------------------------------
 # Data Sources
 # ---------------------------------------------------------

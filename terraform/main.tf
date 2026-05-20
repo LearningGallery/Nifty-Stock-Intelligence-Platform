@@ -123,25 +123,30 @@ module "cognito" {
 module "lambda_ingestor" {
   source = "./modules/lambda-ingestor"
 
-  function_name             = "${local.name_prefix}-ingestor"
-  etl_function_name         = "${local.name_prefix}-etl"
-  runtime                   = var.lambda_runtime
-  memory_size               = var.lambda_memory_size
-  timeout                   = var.lambda_timeout
-  schedule_expression       = var.ingestion_schedule_expression
+  project_name                  = var.project_name
+  environment                   = var.environment
+  aws_region                    = var.aws_region
   
-  vpc_id                    = module.networking.vpc_id
-  subnet_ids                = module.networking.private_subnet_ids
-  security_group_ids        = [module.security_groups.lambda_sg_id]
+  # File paths to your lambda deployment packages
+  # (Make sure these zip files actually exist at these paths before applying)
+  lambda_filename               = "../ingestor/lambda-ingestor.zip"
+  etl_lambda_filename           = "../ingestor/lambda-etl.zip"
   
-  opensearch_endpoint       = module.opensearch.endpoint
-  opensearch_domain_arn     = module.opensearch.domain_arn
+  lambda_runtime                = var.lambda_runtime
+  lambda_memory_size            = var.lambda_memory_size
+  lambda_timeout                = var.lambda_timeout
+  ingestion_schedule_expression = var.ingestion_schedule_expression
   
-  data_lake_bucket_name     = "${local.name_prefix}-data-lake-${random_id.suffix.hex}"
+  subnet_ids                    = module.networking.private_subnet_ids
+  security_group_ids            = [module.security_groups.lambda_sg_id]
   
-  dynamodb_metadata_table_name = module.dynamodb.document_metadata_table_name
+  opensearch_endpoint           = module.opensearch.endpoint
+  opensearch_domain_arn         = module.opensearch.domain_arn
   
-  bedrock_embedding_model_id = var.bedrock_embedding_model_id
+  document_metadata_table_name  = module.dynamodb.document_metadata_table_name
+  document_metadata_table_arn   = module.dynamodb.document_metadata_table_arn
+  
+  bedrock_embedding_model       = var.bedrock_embedding_model_id
   
   tags = local.common_tags
 }
@@ -207,8 +212,7 @@ module "backend_service" {
     ENABLE_XRAY               = tostring(var.enable_xray_tracing)
 
     UPLOAD_BUCKET                = module.document_processor.upload_bucket_name
-    DOCUMENT_PROCESSOR_LAMBDA    = module.document_processor.document_processor_function_name
-
+    DOCUMENT_PROCESSOR_LAMBDA    = module.document_processor.lambda_function_name
 
   }
   
@@ -240,10 +244,14 @@ module "backend_service" {
 module "waf" {
   source = "./modules/waf"
 
-  name                      = "${local.name_prefix}-waf"
-  alb_arn                   = module.backend_service.alb_arn
-  rate_limit                = var.waf_rate_limit
-  blocked_countries         = var.waf_blocked_countries
+  providers = {
+    aws = aws.us_east_1
+  }
+
+  project_name      = var.project_name
+  environment       = var.environment
+  rate_limit        = var.waf_rate_limit
+  blocked_countries = var.waf_blocked_countries
   
   tags = local.common_tags
 }
@@ -259,7 +267,7 @@ module "cloudfront" {
   frontend_bucket_name      = "${local.name_prefix}-frontend-${random_id.suffix.hex}"
   alb_domain_name           = module.backend_service.alb_dns_name
   price_class               = var.cloudfront_price_class
-  waf_web_acl_id            = module.waf.web_acl_id
+  waf_web_acl_id            = module.waf.web_acl_arn
   
   tags = local.common_tags
 }

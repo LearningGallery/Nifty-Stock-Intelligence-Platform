@@ -64,7 +64,7 @@ resource "aws_ecr_lifecycle_policy" "backend" {
 # IAM Role for ECS Task Execution
 # ---------------------------------------------------------
 resource "aws_iam_role" "ecs_task_execution" {
-  name_prefix = "${var.service_name}-execution-"
+  name_prefix = "ecs-exec-${var.tags["Environment"]}-" # 13 characters + variable = 17 chars (Well under 38)
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -283,7 +283,7 @@ resource "aws_ecs_task_definition" "backend" {
 # Application Load Balancer
 # ---------------------------------------------------------
 resource "aws_lb" "backend" {
-  name               = "${var.service_name}-alb"
+  name               = "${var.tags["Environment"]}-nsip-backend-alb" # 25 characters (Well under 32)
   internal           = false
   load_balancer_type = "application"
   security_groups    = [var.alb_security_group_id]
@@ -384,7 +384,15 @@ resource "tls_self_signed_cert" "backend" {
   ]
 }
 
+resource "time_sleep" "wait_for_acm" {
+  depends_on = [tls_self_signed_cert.backend]
+
+  create_duration = "15s"
+}
+
 resource "aws_acm_certificate" "backend" {
+  depends_on = [time_sleep.wait_for_acm]
+
   private_key      = tls_private_key.backend.private_key_pem
   certificate_body = tls_self_signed_cert.backend.cert_pem
 
@@ -425,10 +433,8 @@ resource "aws_ecs_service" "backend" {
 
   health_check_grace_period_seconds = 60
 
-  deployment_configuration {
-    maximum_percent         = 200
-    minimum_healthy_percent = 100
-  }
+  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = 100
 
   deployment_circuit_breaker {
     enable   = true

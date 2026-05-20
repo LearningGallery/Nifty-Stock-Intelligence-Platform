@@ -143,7 +143,7 @@ resource "aws_cognito_identity_pool" "main" {
 # IAM Roles for Identity Pool
 # ---------------------------------------------------------
 resource "aws_iam_role" "authenticated" {
-  name_prefix = "${var.user_pool_name}-authenticated-"
+  name_prefix = "cog-auth-${var.tags["Environment"]}-" # 13 characters + variable = 17 chars (Well under 38)
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
