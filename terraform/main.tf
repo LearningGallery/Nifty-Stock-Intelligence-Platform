@@ -174,6 +174,8 @@ module "backend_service" {
   
   alb_security_group_id     = module.security_groups.alb_sg_id
   ecs_security_group_id     = module.security_groups.ecs_sg_id
+  news_api_key              = var.news_api_key
+  screener_api_key          = var.screener_api_key
   
   # Environment variables
   environment_variables = {
@@ -215,7 +217,6 @@ module "backend_service" {
     DOCUMENT_PROCESSOR_LAMBDA    = module.document_processor.lambda_function_name
 
     STOCK_ANALYSIS_CACHE_TABLE  = module.dynamodb.chat_sessions_table_name
-    API_KEYS_SECRET_NAME        = var.api_keys_secret_arn
 
   }
   

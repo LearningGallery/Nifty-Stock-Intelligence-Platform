@@ -5,6 +5,7 @@ provider "aws" {
 # 1. The S3 Bucket
 resource "aws_s3_bucket" "terraform_state" {
   bucket = "nsip-terraform-state-123456789012" # Ensure this is unique
+  force_destroy = true # Caution: This will delete the bucket and all its contents when the infrastructure is destroyed
 }
 
 # 2. Enable Versioning (Crucial for state recovery)

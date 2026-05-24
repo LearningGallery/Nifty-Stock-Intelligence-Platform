@@ -270,9 +270,16 @@ variable "redis_engine_version" {
   default     = "7.0"
 }
 
-variable "api_keys_secret_arn" {
-  description = "The ARN of the Secrets Manager secret for API keys"
+variable "news_api_key" {
+  description = "API key for News Data"
   type        = string
+  sensitive   = true
+}
+
+variable "screener_api_key" {
+  description = "API key for Screener Data"
+  type        = string
+  sensitive   = true
 }
 
 # ---------------------------------------------------------

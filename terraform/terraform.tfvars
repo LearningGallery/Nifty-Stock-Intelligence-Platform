@@ -68,6 +68,9 @@ redis_node_type       = "cache.t3.micro"
 redis_num_cache_nodes = 1
 redis_engine_version  = "7.0"
 
+news_api_key     = "99a2036829f949fba2b74c5218f1e975"
+screener_api_key = "ImPggcmQxEv5dIFt0QZuCAY3Q414bdGh"
+
 # Additional Tags
 additional_tags = {
   Team       = "Engineering"

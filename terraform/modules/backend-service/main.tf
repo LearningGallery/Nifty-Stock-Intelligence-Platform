@@ -242,6 +242,24 @@ resource "aws_ecs_task_definition" "backend" {
       name      = "backend"
       image     = "${aws_ecr_repository.backend.repository_url}:${var.image_tag}"
       essential = true
+      secrets = [
+        {
+          name      = "NEWS_API_KEY"
+          valueFrom = "${aws_secretsmanager_secret.api_keys.arn}:news_api_key::"
+        },
+        {
+          name      = "SCREENER_API_KEY"
+          valueFrom = "${aws_secretsmanager_secret.api_keys.arn}:screener_api_key::"
+        }
+      ]
+      # END OF SECRETS BLOCK
+
+      portMappings = [
+        {
+          containerPort = 8000
+          protocol      = "tcp"
+        }
+      ]
 
       portMappings = [
         {
@@ -543,11 +561,7 @@ resource "aws_secretsmanager_secret" "api_keys" {
 resource "aws_secretsmanager_secret_version" "api_keys" {
   secret_id = aws_secretsmanager_secret.api_keys.id
   secret_string = jsonencode({
-    news_api_key     = "placeholder"
-    screener_api_key = "placeholder"
+    news_api_key     = var.news_api_key
+    screener_api_key = var.screener_api_key
   })
-
-  lifecycle {
-    ignore_changes = [secret_string]
-  }
 }

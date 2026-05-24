@@ -150,3 +150,15 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "news_api_key" {
+  description = "API key for News Data"
+  type        = string
+  sensitive   = true
+}
+
+variable "screener_api_key" {
+  description = "API key for Screener Data"
+  type        = string
+  sensitive   = true
+}
