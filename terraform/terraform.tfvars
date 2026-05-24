@@ -61,7 +61,7 @@ waf_blocked_countries = []
 # Monitoring Configuration
 cloudwatch_log_retention_days = 30
 enable_xray_tracing           = true
-alarm_email_endpoint          = "your-email@example.com"
+alarm_email_endpoint          = "abutalha3005@gmail.com"
 
 # ElastiCache Configuration
 redis_node_type       = "cache.t3.micro"

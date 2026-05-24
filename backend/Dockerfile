@@ -1,5 +1,5 @@
 # Multi-stage build for optimized image size
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # Install system dependencies for TA-Lib and other libraries
 RUN apt-get update && apt-get install -y \
@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     make \
     wget \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install TA-Lib

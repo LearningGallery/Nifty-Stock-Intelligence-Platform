@@ -1,7 +1,6 @@
 """
 Security and Authentication Utilities
 """
-import jwt
 from typing import Optional, Dict, Any
 from fastapi import HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -15,6 +14,7 @@ from app.core.exceptions import AuthenticationException
 
 
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 
 class CognitoTokenVerifier:
@@ -101,7 +101,7 @@ async def get_current_user(
 
 
 async def get_optional_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Security(security, auto_error=False)
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(optional_security)
 ) -> Optional[Dict[str, Any]]:
     """
     Dependency to get current user if authenticated, None otherwise

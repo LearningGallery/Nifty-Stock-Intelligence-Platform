@@ -214,6 +214,9 @@ module "backend_service" {
     UPLOAD_BUCKET                = module.document_processor.upload_bucket_name
     DOCUMENT_PROCESSOR_LAMBDA    = module.document_processor.lambda_function_name
 
+    STOCK_ANALYSIS_CACHE_TABLE  = module.dynamodb.chat_sessions_table_name
+    API_KEYS_SECRET_NAME        = var.api_keys_secret_arn
+
   }
   
   # Auto-scaling configuration

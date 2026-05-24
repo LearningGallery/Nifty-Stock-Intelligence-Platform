@@ -349,9 +349,15 @@ cd ../ingestor
 # Create deployment package
 pip install -r requirements.txt -t package/
 cd package
-zip -r ../lambda-ingestor.zip .
+zip -r ../lambda-ingestor.zip . **or** Compress-Archive -Path * -DestinationPath ..\lambda-ingestor.zip -Force
 cd ..
 zip -g lambda-ingestor.zip src/*.py src/**/*.py
+
+# 1. Collect all Python files inside the src folder and its subfolders
+$files = Get-ChildItem -Path src -Filter *.py -Recurse | Select-Object -ExpandProperty FullName
+# 2. Append those files into your existing zip archive
+Compress-Archive -Path $files -Update -DestinationPath .\lambda-ingestor.zip
+
 
 # Update Lambda function
 export LAMBDA_INGESTOR=$(terraform output -raw lambda_ingestor_function_name)

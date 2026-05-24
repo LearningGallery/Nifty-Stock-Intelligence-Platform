@@ -7,60 +7,60 @@ resource "random_id" "suffix" {
 
 resource "aws_s3_bucket" "data_lake" {
   bucket = "${var.project_name}-${var.environment}-data-lake-${random_id.suffix.hex}"
-
-  tags = merge(
-    var.tags,
-    {
-      Name = "${var.project_name}-${var.environment}-data-lake"
-    }
-  )
+  tags   = merge(var.tags, { Name = "${var.project_name}-${var.environment}-data-lake" })
 }
 
 resource "aws_s3_bucket_versioning" "data_lake" {
   bucket = aws_s3_bucket.data_lake.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
+  versioning_configuration { status = "Enabled" }
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
   bucket = aws_s3_bucket.data_lake.id
-
   rule {
     id     = "archive-old-data"
     status = "Enabled"
     filter {}
-
-    transition {
-      days          = 90
-      storage_class = "GLACIER"
-    }
-
+    transition { 
+     days = 90
+     storage_class = "GLACIER"
+     }
     expiration {
       days = 365
-    }
+      }
   }
 }
 
 # ---------------------------------------------------------
-# IAM Role for Lambda Ingestor
+# S3 Deployment Bucket & Objects
+# ---------------------------------------------------------
+resource "aws_s3_bucket" "deployment_bucket" {
+  bucket = "${var.project_name}-${var.environment}-lambda-deployments"
+}
+
+resource "aws_s3_object" "ingestor_zip" {
+  bucket = aws_s3_bucket.deployment_bucket.id
+  key    = "lambda-ingestor.zip"
+  source = var.lambda_filename
+  etag   = filemd5(var.lambda_filename)
+}
+
+resource "aws_s3_object" "etl_zip" {
+  bucket = aws_s3_bucket.deployment_bucket.id
+  key    = "lambda-etl.zip"
+  source = var.etl_lambda_filename
+  etag   = filemd5(var.etl_lambda_filename)
+}
+
+# ---------------------------------------------------------
+# IAM Roles & Policies
 # ---------------------------------------------------------
 resource "aws_iam_role" "lambda_ingestor" {
   name_prefix = "${var.project_name}-${var.environment}-ingestor-"
-
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "lambda.amazonaws.com"
-      }
-      Action = "sts:AssumeRole"
-    }]
+    Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }]
   })
-
-  tags = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_basic" {
@@ -71,35 +71,48 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
 resource "aws_iam_role_policy" "ingestor_policy" {
   name = "${var.project_name}-${var.environment}-ingestor-policy"
   role = aws_iam_role.lambda_ingestor.id
-
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject",
-          "s3:GetObject",
-          "s3:ListBucket"
-        ]
-        Resource = [
-          aws_s3_bucket.data_lake.arn,
-          "${aws_s3_bucket.data_lake.arn}/*"
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = "*"
-      }
+      { Effect = "Allow", Action = ["s3:PutObject", "s3:GetObject", "s3:ListBucket"], Resource = [aws_s3_bucket.data_lake.arn, "${aws_s3_bucket.data_lake.arn}/*"] },
+      { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = "*" }
+    ]
+  })
+}
+
+resource "aws_iam_role" "lambda_etl" {
+  name_prefix = "${var.project_name}-${var.environment}-etl-"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "etl_basic" {
+  role = aws_iam_role.lambda_etl.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  }
+resource "aws_iam_role_policy_attachment" "etl_vpc" {
+  role = aws_iam_role.lambda_etl.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+  }
+
+resource "aws_iam_role_policy" "etl_policy" {
+  name = "${var.project_name}-${var.environment}-etl-policy"
+  role = aws_iam_role.lambda_etl.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = ["s3:GetObject", "s3:ListBucket"], Resource = [aws_s3_bucket.data_lake.arn, "${aws_s3_bucket.data_lake.arn}/*"] },
+      { Effect = "Allow", Action = ["bedrock:InvokeModel"], Resource = "*" },
+      { Effect = "Allow", Action = ["es:ESHttpPost", "es:ESHttpPut", "aoss:APIAccessAll"], Resource = var.opensearch_domain_arn },
+      { Effect = "Allow", Action = ["dynamodb:PutItem", "dynamodb:UpdateItem"], Resource = var.document_metadata_table_arn }
     ]
   })
 }
 
 # ---------------------------------------------------------
-# Lambda Function - Ingestor
+# Lambda Functions
 # ---------------------------------------------------------
 resource "aws_lambda_function" "ingestor" {
   function_name = "${var.project_name}-${var.environment}-ingestor"
@@ -108,94 +121,22 @@ resource "aws_lambda_function" "ingestor" {
   runtime       = var.lambda_runtime
   timeout       = var.lambda_timeout
   memory_size   = var.lambda_memory_size
-
-  filename         = var.lambda_filename
+  s3_bucket     = aws_s3_bucket.deployment_bucket.id
+  s3_key        = aws_s3_object.ingestor_zip.key
   source_code_hash = filebase64sha256(var.lambda_filename)
-
-  environment {
-    variables = {
-      DATA_LAKE_BUCKET = aws_s3_bucket.data_lake.id
-      #AWS_REGION       = var.aws_region
-    }
+  vpc_config {
+    subnet_ids         = var.subnet_ids
+    security_group_ids = var.security_group_ids
   }
-
-  tags = var.tags
+  environment { variables = { DATA_LAKE_BUCKET = aws_s3_bucket.data_lake.id } }
+  tags       = var.tags
+  depends_on = [aws_s3_object.ingestor_zip]
 }
 
-# ---------------------------------------------------------
-# Lambda Function - ETL
-# ---------------------------------------------------------
-resource "aws_iam_role" "lambda_etl" {
-  name_prefix = "${var.project_name}-${var.environment}-etl-"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "lambda.amazonaws.com"
-      }
-      Action = "sts:AssumeRole"
-    }]
-  })
-
-  tags = var.tags
-}
-
-resource "aws_iam_role_policy_attachment" "etl_basic" {
-  role       = aws_iam_role.lambda_etl.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-resource "aws_iam_role_policy_attachment" "etl_vpc" {
-  role       = aws_iam_role.lambda_etl.name
+# Attach the VPC Access Execution role policy
+resource "aws_iam_role_policy_attachment" "ingestor_vpc_access" {
+  role       = aws_iam_role.lambda_ingestor.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
-}
-
-resource "aws_iam_role_policy" "etl_policy" {
-  name = "${var.project_name}-${var.environment}-etl-policy"
-  role = aws_iam_role.lambda_etl.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:ListBucket"
-        ]
-        Resource = [
-          aws_s3_bucket.data_lake.arn,
-          "${aws_s3_bucket.data_lake.arn}/*"
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "bedrock:InvokeModel"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "es:ESHttpPost",
-          "es:ESHttpPut",
-          "aoss:APIAccessAll"
-        ]
-        Resource = var.opensearch_domain_arn
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem"
-        ]
-        Resource = var.document_metadata_table_arn
-      }
-    ]
-  })
 }
 
 resource "aws_lambda_function" "etl" {
@@ -205,30 +146,27 @@ resource "aws_lambda_function" "etl" {
   runtime       = var.lambda_runtime
   timeout       = var.lambda_timeout
   memory_size   = var.lambda_memory_size
-
-  filename         = var.etl_lambda_filename
+  s3_bucket     = aws_s3_bucket.deployment_bucket.id
+  s3_key        = aws_s3_object.etl_zip.key
   source_code_hash = filebase64sha256(var.etl_lambda_filename)
-
   environment {
     variables = {
-      OPENSEARCH_ENDPOINT         = var.opensearch_endpoint
-      OPENSEARCH_INDEX            = var.opensearch_index
-      BEDROCK_EMBEDDING_MODEL     = var.bedrock_embedding_model
-      DOCUMENT_METADATA_TABLE     = var.document_metadata_table_name
-      #AWS_REGION                  = var.aws_region
+      OPENSEARCH_ENDPOINT     = var.opensearch_endpoint
+      OPENSEARCH_INDEX        = var.opensearch_index
+      BEDROCK_EMBEDDING_MODEL = var.bedrock_embedding_model
+      DOCUMENT_METADATA_TABLE = var.document_metadata_table_name
     }
   }
-
   vpc_config {
     subnet_ids         = var.subnet_ids
     security_group_ids = var.security_group_ids
   }
-
-  tags = var.tags
+  tags       = var.tags
+  depends_on = [aws_s3_object.etl_zip]
 }
 
 # ---------------------------------------------------------
-# S3 Event Trigger for ETL
+# Triggers & Permissions
 # ---------------------------------------------------------
 resource "aws_lambda_permission" "allow_s3" {
   statement_id  = "AllowExecutionFromS3"
@@ -240,31 +178,22 @@ resource "aws_lambda_permission" "allow_s3" {
 
 resource "aws_s3_bucket_notification" "data_lake" {
   bucket = aws_s3_bucket.data_lake.id
-
   lambda_function {
     lambda_function_arn = aws_lambda_function.etl.arn
     events              = ["s3:ObjectCreated:*"]
     filter_prefix       = "raw/stocks/"
     filter_suffix       = ".json"
   }
-
   depends_on = [aws_lambda_permission.allow_s3]
 }
 
-# ---------------------------------------------------------
-# EventBridge Schedule for Ingestor
-# ---------------------------------------------------------
 resource "aws_cloudwatch_event_rule" "ingestor_schedule" {
   name                = "${var.project_name}-${var.environment}-ingestor-schedule"
-  description         = "Trigger ingestor every 30 minutes during market hours"
   schedule_expression = var.ingestion_schedule_expression
-
-  tags = var.tags
 }
 
 resource "aws_cloudwatch_event_target" "ingestor" {
   rule      = aws_cloudwatch_event_rule.ingestor_schedule.name
-  target_id = "IngestorLambda"
   arn       = aws_lambda_function.ingestor.arn
 }
 

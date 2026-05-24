@@ -59,7 +59,7 @@ Always include appropriate disclaimers:
 
 Remember: Your goal is to empower informed decision-making, not to make decisions for users."""
 
----
+#---
 
 ANALYSIS_PROMPT_TEMPLATE = """Perform a comprehensive analysis for {stock_symbol} stock.
 
@@ -125,7 +125,7 @@ Format your response in a clear, structured manner suitable for both novice and 
 Include the mandatory disclaimer: "This analysis is for informational purposes only and should not be construed as financial advice. Please consult with a SEBI-registered financial advisor before making investment decisions."
 """
 
----
+#---
 
 FOLLOW_UP_PROMPT_TEMPLATE = """Continue the conversation about {stock_symbol}.
 
@@ -150,7 +150,7 @@ If the question is about:
 
 Keep your response conversational and directly address the user's query."""
 
----
+#---
 
 QUICK_ANALYSIS_PROMPT = """Provide a quick snapshot for {stock_symbol}:
 
@@ -167,7 +167,7 @@ Give a 2-3 sentence quick take with:
 
 Keep it concise and actionable."""
 
----
+#---
 
 ERROR_HANDLING_PROMPT = """The user asked about {stock_symbol}, but we encountered an issue: {error_type}
 
@@ -179,7 +179,7 @@ Please respond professionally:
 
 Keep the tone helpful and professional."""
 
----
+#---
 
 DISCLAIMER_TEXT = """
 ⚠️ **Important Disclaimer**

@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
-import pandas_ta as ta
+import pandas_ta_classic as ta
 
 from app.services.stock_data_service import StockDataService
 from app.core.logging import logger

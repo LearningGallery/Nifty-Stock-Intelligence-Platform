@@ -22,15 +22,15 @@ httpx==0.26.0
 aiohttp==3.9.1
 
 # Data Processing
-pandas==2.1.4
-numpy==1.26.3
+pandas>=2.2.2
+numpy>=2.0.0
 
 # Technical Analysis
-ta-lib==0.4.28  # Requires system TA-Lib installation
-pandas-ta==0.3.14b0
+ta-lib>=0.4.29  # Requires system TA-Lib installation
+pandas-ta-classic
 
 # NLP & Sentiment Analysis
-transformers==4.36.2
+transformers>=4.40.0
 torch==2.1.2
 nltk==3.8.1
 textblob==0.17.1

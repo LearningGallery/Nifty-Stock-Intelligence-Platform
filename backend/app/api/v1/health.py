@@ -6,6 +6,8 @@ from typing import Dict, Any
 from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
+from opensearchpy import AsyncOpenSearch, AWSV4SignerAuth, RequestsHttpConnection
+from boto3 import Session
 
 from app.config import settings
 from app.core.logging import logger
@@ -52,9 +54,11 @@ async def detailed_health_check() -> Dict[str, Any]:
     
     # Check DynamoDB
     try:
+        aws_clients = await get_aws_clients()
         dynamodb = aws_clients["dynamodb"]
         table = dynamodb.Table(settings.CHAT_SESSIONS_TABLE)
-        table.table_status
+        # Accessing table_status is a lightweight way to check connectivity
+        _ = table.table_status
         health_status["dependencies"]["dynamodb"] = "healthy"
     except Exception as e:
         logger.error(f"DynamoDB health check failed: {e}")
@@ -74,9 +78,6 @@ async def detailed_health_check() -> Dict[str, Any]:
     
     # Check OpenSearch
     try:
-        from opensearchpy import AsyncOpenSearch, AWSV4SignerAuth
-        from boto3 import Session
-        
         session = Session()
         credentials = session.get_credentials()
         auth = AWSV4SignerAuth(credentials, settings.AWS_REGION, "es")
@@ -102,15 +103,9 @@ async def detailed_health_check() -> Dict[str, Any]:
 
 @router.get("/readiness", status_code=status.HTTP_200_OK)
 async def readiness_check() -> Dict[str, str]:
-    """
-    Kubernetes readiness probe endpoint
-    """
     return {"status": "ready"}
 
 
 @router.get("/liveness", status_code=status.HTTP_200_OK)
 async def liveness_check() -> Dict[str, str]:
-    """
-    Kubernetes liveness probe endpoint
-    """
     return {"status": "alive"}

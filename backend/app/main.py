@@ -17,23 +17,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import settings
 from app.core.logging import setup_logging, logger
 from app.core.exceptions import AppException
-from app.api.v1 import chat, stocks, analysis, health
-from app.dependencies import get_aws_clients
 from app.api.v1 import chat, stocks, analysis, health, documents
-
-
-# AWS X-Ray (optional)
-if settings.ENABLE_XRAY:
-    from aws_xray_sdk.core import xray_recorder, patch_all
-    from aws_xray_sdk.ext.flask.middleware import XRayMiddleware
-    
-    xray_recorder.configure(service='NiftyStockIntelligence')
-    patch_all()
-
+from app.dependencies import get_aws_clients
 
 # Setup logging
 setup_logging()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -76,6 +64,15 @@ app = FastAPI(
     openapi_url="/openapi.json",
     lifespan=lifespan
 )
+
+# AWS X-Ray (optional) - Registered AFTER 'app' is created
+#if settings.ENABLE_XRAY:
+#    from aws_xray_sdk.core import xray_recorder, patch_all
+#    from aws_xray_sdk.ext.fastapi.middleware import XRayMiddleware
+#    
+#    xray_recorder.configure(service='NiftyStockIntelligence')
+#    patch_all()
+#    app.add_middleware(XRayMiddleware)
 
 
 # ============================================
@@ -173,35 +170,11 @@ async def general_exception_handler(request: Request, exc: Exception):
 # API Routers
 # ============================================
 
-app.include_router(
-    health.router,
-    tags=["Health"],
-    prefix=""
-)
-
-app.include_router(
-    chat.router,
-    tags=["Chat"],
-    prefix="/api/v1/chat"
-)
-
-app.include_router(
-    stocks.router,
-    tags=["Stocks"],
-    prefix="/api/v1/stocks"
-)
-
-app.include_router(
-    analysis.router,
-    tags=["Analysis"],
-    prefix="/api/v1/analysis"
-)
-
-app.include_router(
-    documents.router,
-    tags=["Documents"],
-    prefix="/api/v1/documents"
-)  
+app.include_router(health.router, tags=["Health"], prefix="")
+app.include_router(chat.router, tags=["Chat"], prefix="/api/v1/chat")
+app.include_router(stocks.router, tags=["Stocks"], prefix="/api/v1/stocks")
+app.include_router(analysis.router, tags=["Analysis"], prefix="/api/v1/analysis")
+app.include_router(documents.router, tags=["Documents"], prefix="/api/v1/documents")
 
 # ============================================
 # Root Endpoint
@@ -209,23 +182,11 @@ app.include_router(
 
 @app.get("/", tags=["Root"])
 async def root() -> Dict[str, Any]:
-    """Root endpoint with API information"""
     return {
         "name": "Nifty Stock Intelligence Platform API",
         "version": "1.0.0",
         "status": "operational",
-        "environment": settings.ENVIRONMENT,
-        "documentation": {
-            "swagger": "/docs",
-            "redoc": "/redoc"
-        },
-        "endpoints": {
-            "health": "/health",
-            "chat": "/api/v1/chat",
-            "stocks": "/api/v1/stocks",
-            "analysis": "/api/v1/analysis",
-            "documents": "/api/v1/documents"
-        }
+        "environment": settings.ENVIRONMENT
     }
 
 
@@ -235,7 +196,6 @@ async def root() -> Dict[str, Any]:
 
 if __name__ == "__main__":
     import uvicorn
-    
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
